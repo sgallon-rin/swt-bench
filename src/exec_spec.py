@@ -200,7 +200,7 @@ class ExecSpec:
         This is the setup script for the instance image.
         """
         setup_commands = [
-            f"git clone -o origin https://github.com/{self.repo} {self.repo_directory}",
+            f"git clone -o origin https://github.com/{self.repo}.git {self.repo_directory}",
             f"chmod -R 777 {self.repo_directory}",  # So nonroot user can run tests
             f"cd {self.repo_directory}",
             f"git reset --hard {self.base_commit}",

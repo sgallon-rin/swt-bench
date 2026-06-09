@@ -1,3 +1,6 @@
+import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
 import json
 import pathlib
 from typing import Dict, cast
