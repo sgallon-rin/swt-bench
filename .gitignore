@@ -189,3 +189,6 @@ image_build_logs/
 /test/
 /inference_output/
 /evaluation_results/
+/repo-cache/
+/predictions/
+/tmp/
