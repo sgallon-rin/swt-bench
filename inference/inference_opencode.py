@@ -12,10 +12,13 @@ For each instance:
 Supports resume: re-running skips already-completed instances.
 
 Usage:
-    python inference/run.py --max-instances 5 --model deepseek-ve-flash
+    python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash
+
+    # With specific agent
+    python inference/inference_opencode.py --max-instances 5 --agent agent_name
 
     # With custom dataset / git mirror
-    GIT_BASE_URL=https://hub.nuaa.cf python inference/run.py --max-instances 5
+    GIT_BASE_URL=https://hub.nuaa.cf python inference/inference_opencode.py --max-instances 5
 """
 
 import argparse
@@ -25,14 +28,15 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
 
 # --- Defaults ---
 DEFAULT_DATASET = "eth-sri/SWT-bench_Lite_bm25_27k_zsb"
-DEFAULT_MODEL = "deepseek-ve-flash"
-DEFAULT_TIMEOUT = 1800  # 30 minutes per instance
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+DEFAULT_TIMEOUT = None  # no limit
 
 SCRIPT_DIR = Path(__file__).resolve().parent          # inference/
 PROJECT_ROOT = SCRIPT_DIR.parent                       # swt-bench/
@@ -43,6 +47,72 @@ PREDICTIONS_DIR = PROJECT_ROOT / "predictions"
 
 GIT_BASE_URL = os.environ.get("GIT_BASE_URL", "https://github.com")
 HUGGINGFACE_TOKEN = os.environ.get("HF_TOKEN")
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
+
+# ---------------------------------------------------------------------------
+# Streaming subprocess helper
+# ---------------------------------------------------------------------------
+
+def _run_streamed(cmd, cwd, timeout, prefix="", err_prefix="ERR", env=None, check=True, quiet_stderr=False):
+    """Run a command, streaming stdout/stderr to console while capturing both.
+
+    If *quiet_stderr* is True, stderr is captured but NOT printed to console.
+
+    Returns a CompletedProcess-like result with .stdout, .stderr, .returncode.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env or os.environ.copy(),
+    )
+
+    stdout_lines = []
+    stderr_lines = []
+
+    def _read(pipe, acc, label):
+        for line in iter(pipe.readline, ""):
+            acc.append(line)
+            if label is not False and not quiet_stderr:
+                fmt = f"  [{label}] {line.rstrip()}" if label else f"  {line.rstrip()}"
+                sys.stdout.write(fmt + "\n")
+                sys.stdout.flush()
+
+    t_out = threading.Thread(target=_read, args=(proc.stdout, stdout_lines, prefix))
+    t_err = threading.Thread(target=_read, args=(proc.stderr, stderr_lines, err_prefix))
+    t_out.start()
+    t_err.start()
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        t_out.join()
+        t_err.join()
+        raise
+    except TypeError:
+        # timeout=None means wait forever
+        proc.wait()
+
+    t_out.join()
+    t_err.join()
+
+    result = subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode,
+        stdout="".join(stdout_lines),
+        stderr="".join(stderr_lines),
+    )
+
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=result.stderr,
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +152,9 @@ def ensure_repo(repo, repo_cache_dir):
         repo_path.mkdir(parents=True, exist_ok=True)
         clone_url = f"{GIT_BASE_URL}/{repo}.git"
         print(f"  Cloning {clone_url} ...")
-        subprocess.run(
-            ["git", "clone", clone_url, str(repo_path)],
-            check=True, capture_output=True, text=True,
-            timeout=600,
+        _run_streamed(
+            ["git", "clone", "--quiet", clone_url, str(repo_path)],
+            cwd=repo_path.parent, timeout=600, prefix="git", err_prefix="git",
         )
         print(f"  Clone complete: {repo_path}")
     return repo_path
@@ -103,13 +172,14 @@ def setup_workspace(repo_path, base_commit, instance_id, workspace_dir):
 
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
-        ["git", "clone", str(repo_path), str(worktree_path)],
-        check=True, capture_output=True, text=True,
+    print(f"  Creating workspace ...")
+    _run_streamed(
+        ["git", "clone", "--quiet", str(repo_path), str(worktree_path)],
+        cwd=workspace_dir, timeout=120, prefix="git", err_prefix="git",
     )
-    subprocess.run(
+    _run_streamed(
         ["git", "-C", str(worktree_path), "checkout", "--detach", base_commit],
-        check=True, capture_output=True, text=True,
+        cwd=workspace_dir, timeout=60, prefix="git", err_prefix="git",
     )
     return worktree_path
 
@@ -127,20 +197,25 @@ def write_issue(worktree_path, issue_text):
     (worktree_path / "ISSUE.md").write_text(issue_text)
 
 
-def run_opencode(worktree_path, prompt, model, timeout):
+def run_opencode(worktree_path, prompt, model, timeout, agent=None):
     env = os.environ.copy()
     if HUGGINGFACE_TOKEN:
         env["HF_TOKEN"] = HUGGINGFACE_TOKEN
 
-    result = subprocess.run(
-        ["opencode", "run", prompt, "--model", model],
+    cmd = ["opencode", "run", prompt, "--model", model]
+    if agent:
+        cmd.extend(["--agent", agent])
+
+    return _run_streamed(
+        cmd,
         cwd=str(worktree_path),
-        capture_output=True,
-        text=True,
         timeout=timeout,
+        prefix="opencode",
+        err_prefix="opencode",
         env=env,
+        check=False,
+        quiet_stderr=True,
     )
-    return result
 
 
 def _filesystem_diff(worktree_path):
@@ -196,24 +271,32 @@ def main():
     parser.add_argument("--max-instances", type=int, default=None)
     parser.add_argument("--output", default=None,
                         help="JSONL output path (default: predictions/opencode__<model>.jsonl)")
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                        help="Timeout per instance in seconds (default: no limit)")
     parser.add_argument("--repo-cache", default=str(REPO_CACHE_DEFAULT))
     parser.add_argument("--workspace-dir", default=str(WORKSPACE_DIR_DEFAULT))
     parser.add_argument("--instance-ids", nargs="+", default=None,
                         help="Run only these instance IDs")
+    parser.add_argument("--agent", default=None,
+                        help="opencode agent to use (default: none)")
 
     args = parser.parse_args()
 
+    # --- timestamp for this run --------------------------------------------
+    run_ts = time.strftime("%Y%m%d_%H%M%S")
+
     # --- setup paths -------------------------------------------------------
-    model_name = f"opencode__{args.model}"
+    model_safe = args.model.replace("/", "_")
+    model_name = f"opencode__{model_safe}"
     output_path = Path(args.output) if args.output else (
-        PREDICTIONS_DIR / f"opencode__{args.model}.jsonl"
+        PREDICTIONS_DIR / f"opencode__{model_safe}_{run_ts}.jsonl"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     repo_cache_dir = Path(args.repo_cache)
     repo_cache_dir.mkdir(parents=True, exist_ok=True)
-    workspace_dir = Path(args.workspace_dir)
+    workspace_dir = Path(args.workspace_dir) / run_ts
+    workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # --- load dataset ------------------------------------------------------
     print(f"Loading dataset: {args.dataset}")
@@ -258,20 +341,26 @@ def main():
 
             prompt = prompt_template.format(issue=issue)
 
-            print(f"  Running opencode (model={args.model}, timeout={args.timeout}s) ...")
+            print(f"  Running opencode (model={args.model}, agent={args.agent}, timeout={args.timeout}s) ...")
+            log_file = workspace_dir / f"{instance_id}_opencode.log"
+            print(f"  Log → {log_file}")
             t0 = time.time()
-            result = run_opencode(worktree_path, prompt, args.model, args.timeout)
+            result = run_opencode(worktree_path, prompt, args.model, args.timeout, args.agent)
             elapsed = time.time() - t0
-            print(f"  opencode exited {result.returncode} in {elapsed:.0f}s")
+            print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
 
             # Save raw opencode output for debugging
-            log_file = workspace_dir / f"{instance_id}_opencode.log"
             log_file.write_text(
                 f"=== STDOUT ===\n{result.stdout}\n\n=== STDERR ===\n{result.stderr}"
             )
 
-            if result.stderr:
-                print(f"  stderr (first 300 chars): {result.stderr[:300]}")
+            # Print stderr only on failure
+            if result.returncode != 0 and result.stderr:
+                lines = result.stderr.strip().splitlines()
+                preview = "\n".join(lines[:20])
+                print(f"  stderr (first 20 lines):\n{preview}")
+                if len(lines) > 20:
+                    print(f"  ... ({len(lines) - 20} more lines in log file)")
 
             model_patch = extract_patch(result.stdout, worktree_path)
             if not model_patch:
@@ -302,6 +391,7 @@ def main():
                 cleanup_workspace(worktree_path)
 
     print(f"\n{'=' * 60}")
+    print(f"Run timestamp: {run_ts}")
     print(f"Done. Predictions → {output_path}")
     print(f"Evaluate with:")
     print(f"  python -m src.main --dataset_name princeton-nlp/SWE-bench_Lite \\")
