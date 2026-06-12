@@ -57,7 +57,7 @@ MAP_VERSION_TO_INSTALL_SKLEARN = {
         "pip_packages": [
             "cython",
             "numpy==1.19.2",
-            "setuptools",
+            "setuptools>=61.0",
             "scipy==1.5.2",
         ],
     }
@@ -69,7 +69,7 @@ MAP_VERSION_TO_INSTALL_SKLEARN.update(
             "python": "3.9",
             "packages": "'numpy==1.19.2' 'scipy==1.5.2' 'cython==3.0.10' pytest 'pandas<2.0.0' 'matplotlib<3.9.0' setuptools pytest joblib threadpoolctl",
             "install": "python -m pip install -v --no-use-pep517 --no-build-isolation -e .",
-            "pip_packages": ["cython", "setuptools", "numpy", "scipy"],
+            "pip_packages": ["cython", "setuptools>=61.0", "numpy", "scipy"],
         }
         for k in ["1.3", "1.4"]
     }
@@ -156,6 +156,7 @@ MAP_VERSION_TO_INSTALL_DJANGO.update(
                 "export LANGUAGE=en_US:en",
                 "export LC_ALL=en_US.UTF-8",
             ],
+            "pip_packages": ["setuptools>=61.0"],
         }
         for k in ["3.0", "3.1", "3.2"]
     }
@@ -166,6 +167,7 @@ MAP_VERSION_TO_INSTALL_DJANGO.update(
             "python": "3.8",
             "packages": "requirements.txt",
             "install": "python -m pip install -e .",
+            "pip_packages": ["setuptools>=61.0"],
         }
         for k in ["4.0"]
     }
@@ -176,6 +178,7 @@ MAP_VERSION_TO_INSTALL_DJANGO.update(
             "python": "3.9",
             "packages": "requirements.txt",
             "install": "python -m pip install -e .",
+            "pip_packages": ["setuptools>=61.0"],
         }
         for k in ["4.1", "4.2"]
     }
@@ -186,6 +189,7 @@ MAP_VERSION_TO_INSTALL_DJANGO.update(
             "python": "3.11",
             "packages": "requirements.txt",
             "install": "python -m pip install -e .",
+            "pip_packages": ["setuptools>=61.0"],
         }
         for k in ["5.0"]
     }
@@ -448,7 +452,7 @@ MAP_VERSION_TO_INSTALL_MATPLOTLIB.update(
 MAP_VERSION_TO_INSTALL_SPHINX = {
     k: {
         "python": "3.9",
-        "pip_packages": ["tox==4.16.0", "tox-current-env==0.0.11"],
+        "pip_packages": ["tox==4.16.0", "tox-current-env==0.0.11", "roman"],
         "install": "python -m pip install -e .[test]",
         "pre_install": ["sed -i 's/pytest/pytest -rA/' tox.ini"],
     }
@@ -621,7 +625,7 @@ MAP_VERSION_TO_INSTALL_PYLINT.update(
     {
         k: {
             **MAP_VERSION_TO_INSTALL_PYLINT[k],
-            "pip_packages": ["astroid==3.0.0a6", "setuptools"],
+            "pip_packages": ["astroid==3.0.0a6", "setuptools>=61.0"],
         }
         for k in ["3.0"]
     }
