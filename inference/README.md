@@ -11,7 +11,7 @@ Currently, inferencing with opencode is in local environment without sandboxing.
 Requires Docker.
 Follow these steps to set up the evaluation environment.
 
-```shell
+```bash
 git clone git@github.com:sgallon-rin/swt-bench.git
 cd swt-bench
 python -m venv .venv
@@ -20,7 +20,7 @@ pip install -e .  # try `uv pip install -e .` instead if error occurs
 ```
 
 Test your installation by running:
-```shell
+```bash
 export DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock  # required on MacOS; untested on other platforms
 python -m src.main \
     --predictions_path gold \
@@ -98,7 +98,8 @@ python -m src.main \
 ```
 
 
-```
+```bash
+# evaluate with gold
 DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock \
 python -m src.main \
     --dataset_name princeton-nlp/SWE-bench_Lite \
