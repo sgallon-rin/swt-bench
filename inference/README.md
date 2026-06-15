@@ -14,7 +14,7 @@ Follow these steps to set up the evaluation environment.
 ```bash
 git clone git@github.com:sgallon-rin/swt-bench.git
 cd swt-bench
-python -m venv .venv
+python -m venv .venv  # altenatively, use uv: `uv venv .venv`
 source .venv/bin/activate
 pip install -e .  # try `uv pip install -e .` instead if error occurs
 ```
@@ -35,6 +35,16 @@ Running evaluation is resource-intensive. For each sample, a docker image of siz
 
 
 ## Quick Start
+
+Download SWT-Bench-Lite dataset
+
+```bash
+pip install -U huggingface_hub
+export HF_ENDPOINT=https://hf-mirror.com  # optional, use mirror
+hf download eth-sri/SWT-bench_Lite_bm25_27k_zsb --repo-type dataset
+```
+
+Run Infernece
 
 ```bash
 # Run 5 instances with opencode
@@ -126,4 +136,45 @@ prompts/
 ├── SWE-Agent.txt           # Original SWE-Agent base prompt
 ├── SWE-Agent-plus.txt      # Original SWE-Agent plus prompt
 └── opencode.txt            # Adapted prompt for opencode (based on plus)
+```
+
+
+## Subset Evaluation
+
+A curated subset of 52 instances (5 per repo, seed=42) is available for quick validation.
+
+### Generate the subset (optional, already included)
+
+```bash
+python dataset/select_subset.py
+```
+
+Output: `dataset/swt_bench_lite_subset.txt`
+
+### Run inference on the subset
+
+```bash
+python inference/inference_opencode.py \
+    --instance-ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
+    --model deepseek/deepseek-v4-flash \
+    --agent dt-generation
+```
+
+### Evaluate the subset
+
+```bash
+# Optional: run on gold first to build reusable docker images for evaluation
+python -m src.main \
+    --dataset_name princeton-nlp/SWE-bench_Lite \
+    --predictions_path gold \
+    --filter_swt \
+    --instance_ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
+    --run_id gold-subset
+
+python -m src.main \
+    --dataset_name princeton-nlp/SWE-bench_Lite \
+    --predictions_path predictions/your_predictions.jsonl \
+    --filter_swt \
+    --instance_ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
+    --run_id opencode_subset
 ```
