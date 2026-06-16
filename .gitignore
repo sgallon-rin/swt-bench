@@ -192,3 +192,4 @@ image_build_logs/
 /repo-cache/
 /predictions/
 /tmp/
+/log/

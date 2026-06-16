@@ -19,6 +19,9 @@ Usage:
 
     # With custom dataset / git mirror
     GIT_BASE_URL=https://hub.nuaa.cf python inference/inference_opencode.py --max-instances 5
+
+    # With run_id for resume (same run_id resumes, different run_id is independent)
+    python inference/inference_opencode.py --max-instances 5 --run-id exp1
 """
 
 import argparse
@@ -279,6 +282,8 @@ def main():
                         help="Run only these instance IDs")
     parser.add_argument("--agent", default=None,
                         help="opencode agent to use (default: none)")
+    parser.add_argument("--run-id", default=None,
+                        help="Run identifier for resume. Same run_id resumes (skip success, retry fail). Different run_id is independent.")
 
     args = parser.parse_args()
 
@@ -288,8 +293,9 @@ def main():
     # --- setup paths -------------------------------------------------------
     model_safe = args.model.replace("/", "_")
     model_name = f"opencode__{model_safe}"
+    run_tag = args.run_id if args.run_id else run_ts
     output_path = Path(args.output) if args.output else (
-        PREDICTIONS_DIR / f"opencode__{model_safe}_{run_ts}.jsonl"
+        PREDICTIONS_DIR / f"opencode__{model_safe}_{run_tag}.jsonl"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -304,6 +310,16 @@ def main():
     ds = hf_load(args.dataset, split="test")
 
     completed_ids = get_completed_ids(output_path)
+    is_resume = len(completed_ids) > 0
+
+    print(f"\nRun ID  : {run_tag}")
+    if not args.run_id:
+        print(f"  (auto-generated; to resume: --run-id {run_tag})")
+    print(f"Output  : {output_path}")
+    if is_resume:
+        print(f"Status  : RESUME ({len(completed_ids)} instance(s) already completed)")
+    else:
+        print(f"Status  : NEW RUN")
 
     if args.instance_ids:
         instances = [i for i in ds if i["instance_id"] in args.instance_ids]
