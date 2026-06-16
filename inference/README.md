@@ -56,9 +56,50 @@ python inference/inference_opencode.py --max-instances 5 --model deepseek/deepse
 # Run specific instances
 python inference/inference_opencode.py --instance-ids sympy__sympy-20590 django__django-10087
 
+# Run with a specific run_id (for resume)
+python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash --run-id exp1
 
-python inference/inference_opencode.py --max-instances 1 --model deepseek/deepseek-v4-flash --agent dt-generation
+# Resume a previous run (skips completed, retries failed)
+python inference/inference_opencode.py --model deepseek/deepseek-v4-flash --run-id exp1
 ```
+
+## Run ID & Resume
+
+Each run has a `run_id` that determines the output file and enables resume. The output filename includes both model and agent for clear identification.
+
+| Scenario | Command | Behavior |
+|----------|---------|----------|
+| New run (auto ID) | `python inference_opencode.py --max-instances 5` | Uses timestamp as run_id, creates new file |
+| New run (custom ID) | `python inference_opencode.py --run-id exp1` | Output saved to `opencode__<model>__<agent>__exp1.jsonl` |
+| Resume | `python inference_opencode.py --run-id exp1` | Skips completed instances, retries failed ones |
+| Independent runs | `--run-id exp1` vs `--run-id exp2` | Different output files, no interference |
+
+When `--run-id` is not specified, an auto-generated timestamp is used as run_id. The script will print the run_id at startup:
+
+```
+Run ID  : 20260615_150838
+  (auto-generated; to resume: --run-id 20260615_150838)
+Output  : predictions/opencode__deepseek_deepseek-v4-flash__build__20260615_150838.jsonl
+Status  : NEW RUN
+```
+
+To resume a previous run, use the same run_id:
+
+```
+Run ID  : exp1
+Output  : predictions/opencode__deepseek_deepseek-v4-flash__dt-generation__exp1.jsonl
+Status  : RESUME (3 instance(s) already completed)
+```
+
+### Model & Agent in Filename
+
+The output filename format is: `opencode__<model>__<agent>__<run-id>.jsonl`
+
+- `<model>`: Model name with `/` replaced by `_`
+- `<agent>`: Agent name, or `build` if not specified
+- `<run-id>`: Custom run_id or auto-generated timestamp
+
+This ensures different model/agent combinations produce separate output files, even with the same run_id.
 
 ## How It Works
 
@@ -82,9 +123,10 @@ Resume-safe: re-running skips instances already in the output JSONL.
 | `--dataset` | `eth-sri/SWT-bench_Lite_bm25_27k_zsb` | HuggingFace dataset name |
 | `--model` | `deepseek/deepseek-v4-flash` | Model name (passed to the agent) |
 | `--agent` | `None` | opencode agent to use (default: none) |
+| `--run-id` | `None` | Run identifier for resume. Same ID resumes (skip success, retry fail). Different IDs are independent. |
 | `--max-instances` | all | Limit number of instances to process |
 | `--instance-ids` | — | Run only these specific IDs (overrides max) |
-| `--output` | `predictions/opencode__<model>_<timestamp>.jsonl` | Output JSONL path |
+| `--output` | `predictions/opencode__<model>__<agent>__<run-id-or-timestamp>.jsonl` | Output JSONL path |
 | `--timeout` | `None` | Timeout per instance (seconds, default: no limit) |
 | `--repo-cache` | `repo-cache/` | Directory to cache cloned repos |
 | `--workspace-dir` | `tmp/workspaces/` | Temporary per-instance workspaces |

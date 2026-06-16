@@ -293,9 +293,10 @@ def main():
     # --- setup paths -------------------------------------------------------
     model_safe = args.model.replace("/", "_")
     model_name = f"opencode__{model_safe}"
+    agent_safe = args.agent if args.agent else "build"
     run_tag = args.run_id if args.run_id else run_ts
     output_path = Path(args.output) if args.output else (
-        PREDICTIONS_DIR / f"opencode__{model_safe}_{run_tag}.jsonl"
+        PREDICTIONS_DIR / f"opencode__{model_safe}__{agent_safe}__{run_tag}.jsonl"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -322,15 +323,17 @@ def main():
         print(f"Status  : NEW RUN")
 
     if args.instance_ids:
-        instances = [i for i in ds if i["instance_id"] in args.instance_ids]
+        instances = [i for i in ds if i["instance_id"] in args.instance_ids and i["instance_id"] not in completed_ids]
+        completed_in_selection = len(args.instance_ids) - len(instances)
     else:
         instances = [i for i in ds if i["instance_id"] not in completed_ids]
+        completed_in_selection = len(completed_ids)
 
     if args.max_instances:
         instances = instances[:args.max_instances]
 
     print(f"Total in dataset : {len(ds)}")
-    print(f"Already completed: {len(completed_ids)}")
+    print(f"Already completed: {completed_in_selection}")
     print(f"To process       : {len(instances)}")
     if not instances:
         print("Nothing to do.")
@@ -339,6 +342,8 @@ def main():
     prompt_template = load_prompt_template()
 
     # --- process instances -------------------------------------------------
+    success_ids = []
+    failed_ids = []
     for idx, instance in enumerate(instances):
         instance_id   = instance["instance_id"]
         repo          = instance["repo"]
@@ -381,6 +386,7 @@ def main():
             model_patch = extract_patch(result.stdout, worktree_path)
             if not model_patch:
                 print("  WARNING: empty patch extracted")
+                failed_ids.append(instance_id)
             else:
                 print(f"  Patch: {len(model_patch)} chars")
 
@@ -393,20 +399,31 @@ def main():
                 f.write(json.dumps(pred) + "\n")
                 f.flush()
             print(f"  ✓ Saved")
+            success_ids.append(instance_id)
 
         except subprocess.TimeoutExpired:
             print(f"  ✗ TIMEOUT ({args.timeout}s)")
+            failed_ids.append(instance_id)
         except subprocess.CalledProcessError as e:
             msg = e.stderr[:500] if e.stderr else str(e)
             print(f"  ✗ Command failed: {msg}")
+            failed_ids.append(instance_id)
         except Exception:
             print(f"  ✗ Error: {traceback.format_exc()}")
+            failed_ids.append(instance_id)
 
         finally:
             if worktree_path is not None:
                 cleanup_workspace(worktree_path)
 
+    total_run = len(success_ids) + len(failed_ids)
     print(f"\n{'=' * 60}")
+    print(f"Run Summary:")
+    print(f"  Total run : {total_run}")
+    print(f"  Success   : {len(success_ids)}")
+    print(f"  Failed    : {len(failed_ids)}")
+    if failed_ids:
+        print(f"  Failed IDs: {', '.join(failed_ids)}")
     print(f"Run timestamp: {run_ts}")
     print(f"Done. Predictions → {output_path}")
     print(f"Evaluate with:")
