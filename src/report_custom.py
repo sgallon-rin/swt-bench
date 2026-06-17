@@ -7,16 +7,16 @@ based on your actual subset size.
 
 Usage:
     # Basic usage with custom total
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 52
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51
 
     # With custom name
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 52 --name "My Subset"
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51 --name "My Subset"
 
     # With LaTeX output
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 52 --format latex
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51 --format latex
 
     # With coverage delta comparison (requires a gold run in the same parent directory)
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 52 --gold-run-id gold-subset-a
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51 --gold-run-id gold-subset-a
 """
 
 import sys

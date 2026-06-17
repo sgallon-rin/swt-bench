@@ -183,7 +183,7 @@ prompts/
 
 ## Subset Evaluation
 
-A curated subset of 52 instances (5 per repo, seed=42) is available for quick validation.
+A curated subset of 51 instances (5 per repo, seed=42) is available for quick validation. Unstable instances (appearing in any filter file) are automatically excluded during selection.
 
 ### Generate the subset (optional, already included)
 
@@ -191,7 +191,7 @@ A curated subset of 52 instances (5 per repo, seed=42) is available for quick va
 python dataset/select_subset.py
 ```
 
-Output: `dataset/swt_bench_lite_subset.txt`
+Output: `dataset/swt_bench_lite_subset.txt` (51 instances after filtering)
 
 ### Run inference on the subset
 
@@ -226,18 +226,18 @@ python -m src.main \
 The standard `src/report.py` uses the full dataset size (~300) as denominator, which is incorrect for subsets. Use `src/report_custom.py` instead:
 
 ```bash
-# Basic report (replace 52 with your actual subset size)
-python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model --total 52
+# Basic report (replace 51 with your actual subset size)
+python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model --total 51
 
 # With Coverage Delta (requires a gold run for comparison)
 python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model \
-    --total 52 \
+    --total 51 \
     --gold-run-id opencode_subset \
     --name "My Model"
 
 # LaTeX format
 python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model \
-    --total 52 \
+    --total 51 \
     --gold-run-id opencode_subset \
     --format latex
 ```
@@ -246,11 +246,11 @@ Example output:
 
 |------------------------------------|---------------|
 | Method                             | My Model      |
-| Applicability (W)                  | 98.1          |
-| Success Rate (S)                   | 86.5          |
-| F->X                               | 96.2          |
-| F->P                               | 86.5          |
-| P->P                               | 19.2          |
+| Applicability (W)                  | 100.0         |
+| Success Rate (S)                   | 88.2          |
+| F->X                               | 98.0          |
+| F->P                               | 88.2          |
+| P->P                               | 19.6          |
 | Coverage Delta (Δᵃˡˡ)              | 60.0          |
 | Coverage Delta Resolved (Δᔆ)       | 60.4          |
 | Coverage Delta Unresolved (Δⁿᵒᵗ ᔆ) | 50.0          |

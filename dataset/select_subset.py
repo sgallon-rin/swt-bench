@@ -22,9 +22,13 @@ Use the subset with inference and evaluation:
 
 import random
 import os
+import sys
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
+sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from datasets import load_dataset
+from figures.util import _filter_cases
 
 SEED = 42
 MAX_PER_REPO = 5
@@ -35,6 +39,9 @@ OUTPUT_FILE = "dataset/swt_bench_lite_subset.txt"
 def main():
     random.seed(SEED)
     ds = load_dataset(DATASET, split="test")
+
+    # Filter out unstable instances that appear in any filter file
+    filter_instances = _filter_cases('all')
 
     repos = {}
     for ex in ds:
@@ -51,8 +58,19 @@ def main():
         print(f"{repo:<20} {len(ids):>10} {len(chosen):>10}")
 
     selected.sort()
+
+    # Filter out unstable instances after selection
+    filtered_out = [iid for iid in selected if iid in filter_instances]
+    selected = [iid for iid in selected if iid not in filter_instances]
+
+    if filtered_out:
+        print("-" * 42)
+        print(f"Filtered out {len(filtered_out)} unstable instance(s):")
+        for iid in filtered_out:
+            print(f"  - {iid}")
+
     with open(OUTPUT_FILE, "w") as f:
-        f.write("\n".join(selected))
+        f.write("\n".join(selected) + "\n")
 
     print("-" * 42)
     print(f"Total selected: {len(selected)}")
