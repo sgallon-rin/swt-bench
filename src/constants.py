@@ -53,7 +53,7 @@ MAP_VERSION_TO_INSTALL_SKLEARN = {
     k: {
         "python": "3.6",
         "packages": "numpy scipy cython pytest pandas matplotlib",
-        "install": "python -m pip install -v --no-use-pep517 --no-build-isolation -e .",
+        "install": "python -m pip install -v --no-build-isolation -e .",
         "pip_packages": [
             "cython",
             "numpy==1.19.2",
@@ -68,7 +68,7 @@ MAP_VERSION_TO_INSTALL_SKLEARN.update(
         k: {
             "python": "3.9",
             "packages": "'numpy==1.19.2' 'scipy==1.5.2' 'cython==3.0.10' pytest 'pandas<2.0.0' 'matplotlib<3.9.0' setuptools pytest joblib threadpoolctl",
-            "install": "python -m pip install -v --no-use-pep517 --no-build-isolation -e .",
+            "install": "python -m pip install -v --no-build-isolation -e .",
             "pip_packages": ["cython", "setuptools>=61.0", "numpy", "scipy"],
         }
         for k in ["1.3", "1.4"]
@@ -625,9 +625,12 @@ MAP_VERSION_TO_INSTALL_PYLINT.update(
     {
         k: {
             **MAP_VERSION_TO_INSTALL_PYLINT[k],
-            "pip_packages": ["astroid==3.0.0a6", "setuptools>=61.0"],
+            "pre_install": [
+                "python -m pip install --upgrade 'setuptools>=64.0' 'wheel>=0.38.0'"
+            ],
+            "pip_packages": ["astroid==3.0.0a6", "setuptools>=64.0"],
         }
-        for k in ["3.0"]
+        for k in ["2.15", "2.16", "2.17", "3.0"]
     }
 )
 

@@ -205,6 +205,24 @@ def run_opencode(worktree_path, prompt, model, timeout, agent=None):
     if HUGGINGFACE_TOKEN:
         env["HF_TOKEN"] = HUGGINGFACE_TOKEN
 
+    # Layer 2: Environment isolation - remove variables that could leak local paths
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("CONDA_PREFIX", None)
+    env.pop("CONDA_DEFAULT_ENV", None)
+    env.pop("CONDA_PYTHON_EXE", None)
+    env.pop("PIP_REQUIRE_VIRTUALENV", None)
+    env.pop("PIP_USER", None)
+
+    # Sanitize PATH: remove .venv and project directories
+    path_entries = []
+    project_root_str = str(PROJECT_ROOT)
+    for p in env.get("PATH", "").split(os.pathsep):
+        if ".venv" in p or project_root_str in p:
+            continue
+        path_entries.append(p)
+    env["PATH"] = os.pathsep.join(path_entries)
+
     cmd = ["opencode", "run", prompt, "--model", model]
     if agent:
         cmd.extend(["--agent", agent])
@@ -236,6 +254,31 @@ def _filesystem_diff(worktree_path):
     return r.stdout.strip()
 
 
+def _validate_patch(patch, worktree_path):
+    """Layer 3: Validate that all files in the patch are within the workspace.
+
+    Returns (is_valid, reason) tuple.
+    """
+    if not patch:
+        return False, "empty patch"
+
+    worktree_resolved = worktree_path.resolve()
+
+    for line in patch.split('\n'):
+        if line.startswith('--- a/') or line.startswith('+++ b/'):
+            file_path = line[6:]  # Remove '--- a/' or '+++ b/'
+            # Skip /dev/null (new file additions)
+            if file_path == '/dev/null':
+                continue
+            full_path = (worktree_path / file_path).resolve()
+            try:
+                full_path.relative_to(worktree_resolved)
+            except ValueError:
+                return False, f"file outside workspace: {file_path}"
+
+    return True, None
+
+
 def extract_patch(stdout, worktree_path):
     """Extract unified git diff from opencode stdout.
 
@@ -243,6 +286,8 @@ def extract_patch(stdout, worktree_path):
       1. Delimiter markers  === PATCH_START === / === PATCH_END ===
       2. Raw diff --git  pattern anywhere in the output
       3. Filesystem fallback (git diff in workspace)
+
+    Layer 3: Validates that all files in the patch are within the workspace.
     """
     # 1) Markers
     m = re.search(
@@ -250,15 +295,27 @@ def extract_patch(stdout, worktree_path):
         stdout, re.DOTALL | re.IGNORECASE,
     )
     if m:
-        return m.group(1).strip()
+        patch = m.group(1).strip()
+        is_valid, reason = _validate_patch(patch, worktree_path)
+        if is_valid:
+            return patch
+        print(f"  WARNING: patch rejected - {reason}")
 
     # 2) Raw diff --git block
     m = re.search(r"(diff --git .+)", stdout, re.DOTALL)
     if m:
-        return m.group(1).strip()
+        patch = m.group(1).strip()
+        is_valid, reason = _validate_patch(patch, worktree_path)
+        if is_valid:
+            return patch
+        print(f"  WARNING: raw diff rejected - {reason}")
 
     # 3) Fallback
-    return _filesystem_diff(worktree_path)
+    patch = _filesystem_diff(worktree_path)
+    is_valid, reason = _validate_patch(patch, worktree_path)
+    if is_valid:
+        return patch
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -390,16 +447,16 @@ def main():
             else:
                 print(f"  Patch: {len(model_patch)} chars")
 
-            pred = {
-                "instance_id": instance_id,
-                "model_name_or_path": model_name,
-                "model_patch": model_patch,
-            }
-            with open(output_path, "a") as f:
-                f.write(json.dumps(pred) + "\n")
-                f.flush()
-            print(f"  ✓ Saved")
-            success_ids.append(instance_id)
+                pred = {
+                    "instance_id": instance_id,
+                    "model_name_or_path": model_name,
+                    "model_patch": model_patch,
+                }
+                with open(output_path, "a") as f:
+                    f.write(json.dumps(pred) + "\n")
+                    f.flush()
+                print(f"  ✓ Saved")
+                success_ids.append(instance_id)
 
         except subprocess.TimeoutExpired:
             print(f"  ✗ TIMEOUT ({args.timeout}s)")
@@ -428,7 +485,7 @@ def main():
     print(f"Done. Predictions → {output_path}")
     print(f"Evaluate with:")
     print(f"  python -m src.main --dataset_name princeton-nlp/SWE-bench_Lite \\")
-    print(f"      --predictions_path {output_path} --filter_swt --run_id opencode_exp1")
+    print(f"      --predictions_path {output_path} --filter_swt --run_id {run_tag}")
 
 
 if __name__ == "__main__":
