@@ -609,12 +609,8 @@ MAP_VERSION_TO_INSTALL_PYLINT = {
         "2.11",
         "2.13",
         "2.14",
-        "2.15",
-        "2.16",
-        "2.17",
         "2.8",
         "2.9",
-        "3.0",
     ]
 }
 MAP_VERSION_TO_INSTALL_PYLINT["2.8"]["pip_packages"] = ["pyenchant==3.2"]
@@ -624,13 +620,29 @@ MAP_VERSION_TO_INSTALL_PYLINT["2.8"]["pre_install"] = [
 MAP_VERSION_TO_INSTALL_PYLINT.update(
     {
         k: {
-            **MAP_VERSION_TO_INSTALL_PYLINT[k],
+            "python": "3.9",
+            "packages": "requirements.txt",
+            "install": "python -m pip install .",
+        }
+        for k in [
+            "2.15",
+            "2.16",
+            "2.17",
+        ]
+    }
+)
+MAP_VERSION_TO_INSTALL_PYLINT.update(
+    {
+        k: {
+            "python": "3.9",
+            "packages": "requirements.txt",
+            "install": "python -m pip install -e .",
             "pre_install": [
                 "python -m pip install --upgrade 'setuptools>=64.0' 'wheel>=0.38.0'"
             ],
             "pip_packages": ["astroid==3.0.0a6", "setuptools>=64.0"],
         }
-        for k in ["2.15", "2.16", "2.17", "3.0"]
+        for k in ["3.0"]
     }
 )
 

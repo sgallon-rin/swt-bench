@@ -220,3 +220,44 @@ python -m src.main \
     --instance_ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
     --run_id opencode_subset
 ```
+
+### Generate Report for the Subset
+
+The standard `src/report.py` uses the full dataset size (~300) as denominator, which is incorrect for subsets. Use `src/report_custom.py` instead:
+
+```bash
+# Basic report (replace 52 with your actual subset size)
+python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model --total 52
+
+# With Coverage Delta (requires a gold run for comparison)
+python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model \
+    --total 52 \
+    --gold-run-id opencode_subset \
+    --name "My Model"
+
+# LaTeX format
+python -m src.report_custom run_instance_swt_logs/opencode_subset/your_model \
+    --total 52 \
+    --gold-run-id opencode_subset \
+    --format latex
+```
+
+Example output:
+
+|------------------------------------|---------------|
+| Method                             | My Model      |
+| Applicability (W)                  | 98.1          |
+| Success Rate (S)                   | 86.5          |
+| F->X                               | 96.2          |
+| F->P                               | 86.5          |
+| P->P                               | 19.2          |
+| Coverage Delta (Δᵃˡˡ)              | 60.0          |
+| Coverage Delta Resolved (Δᔆ)       | 60.4          |
+| Coverage Delta Unresolved (Δⁿᵒᵗ ᔆ) | 50.0          |
+
+| Flag | Description |
+|------|-------------|
+| `--total` | Total number of instances in your subset (used as denominator) |
+| `--gold-run-id` | Run ID of the gold evaluation for coverage delta comparison |
+| `--name` | Display name for the method (default: extracted from path) |
+| `--format` | Output format: `github` (markdown table) or `latex` |
