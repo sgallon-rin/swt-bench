@@ -91,6 +91,25 @@ Output  : predictions/opencode__deepseek_deepseek-v4-flash__dt-generation__exp1.
 Status  : RESUME (3 instance(s) already completed)
 ```
 
+After completion, the script prints the next steps automatically:
+
+```
+Done. Predictions → predictions/opencode__deepseek-v4-flash__dt-generation__exp1.jsonl
+
+📋 Next steps:
+
+1️⃣  Evaluate:
+   python -m src.main \
+       --dataset_name princeton-nlp/SWE-bench_Lite \
+       --predictions_path predictions/opencode__deepseek-v4-flash__dt-generation__exp1.jsonl \
+       --filter_swt \
+       --instance_ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
+       --run_id exp1
+
+2️⃣  Report (after evaluation):
+   python -m src.report_custom run_instance_swt_logs/exp1/opencode__deepseek-v4-flash --total 51
+```
+
 ### Model & Agent in Filename
 
 The output filename format is: `opencode__<model>__<agent>__<run-id>.jsonl`

@@ -483,9 +483,31 @@ def main():
         print(f"  Failed IDs: {', '.join(failed_ids)}")
     print(f"Run timestamp: {run_ts}")
     print(f"Done. Predictions → {output_path}")
-    print(f"Evaluate with:")
-    print(f"  python -m src.main --dataset_name princeton-nlp/SWE-bench_Lite \\")
-    print(f"      --predictions_path {output_path} --filter_swt --run_id {run_tag}")
+    print()
+    print(f"📋 Next steps:")
+    print()
+    if failed_ids:
+        failed_ids_str = ' '.join(failed_ids)
+        agent_flag = f'--agent {args.agent} ' if args.agent else ''
+        print(f"⚠️  {len(failed_ids)} instance(s) failed. Retry:")
+        print(f"   python inference/inference_opencode.py \\")
+        print(f"       --instance-ids {failed_ids_str} \\")
+        print(f"       --model {args.model} \\")
+        print(f"       {agent_flag}\\")
+        print(f"       --run-id {run_tag}")
+        print()
+        print(f"1️⃣  Evaluate (after retrying):")
+    else:
+        print(f"1️⃣  Evaluate:")
+    print(f"   python -m src.main \\")
+    print(f"       --dataset_name princeton-nlp/SWE-bench_Lite \\")
+    print(f"       --predictions_path {output_path} \\")
+    print(f"       --filter_swt \\")
+    print(f"       --instance_ids $(cat dataset/swt_bench_lite_subset.txt | tr '\\n' ' ') \\")
+    print(f"       --run_id {run_tag}")
+    print()
+    print(f"2️⃣  Report (after evaluation):")
+    print(f"   python -m src.report_custom run_instance_swt_logs/{run_tag}/{model_name} --total 51")
 
 
 if __name__ == "__main__":
