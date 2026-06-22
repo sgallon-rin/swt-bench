@@ -225,7 +225,7 @@ def run_opencode(worktree_path, prompt, model, timeout, instance_id, agent=None)
     env["PATH"] = os.pathsep.join(path_entries)
 
     repo_dir = str(worktree_path)
-    cmd = ["opencode", "-m", model]
+    cmd = ["opencode", "run", prompt, "--model", model]
     if agent:
         cmd.extend(["--agent", agent])
     cmd.extend(["--title", instance_id, "--dir", repo_dir])
