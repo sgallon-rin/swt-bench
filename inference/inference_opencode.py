@@ -185,6 +185,17 @@ def setup_workspace(repo_path, base_commit, instance_id, workspace_dir):
         ["git", "-C", str(worktree_path), "checkout", "--detach", base_commit],
         cwd=str(instance_dir), timeout=60, prefix="git", err_prefix="git",
     )
+
+    # Verify commit
+    result = _run_streamed(
+        ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+        cwd=str(instance_dir), timeout=10, prefix="git",
+    )
+    actual_commit = result.stdout.strip()
+    print(f"  Verified commit: {actual_commit[:8]} (expected: {base_commit[:8]})")
+    if not actual_commit.startswith(base_commit):
+        raise RuntimeError(f"Commit mismatch! Expected {base_commit}, got {actual_commit}")
+
     return worktree_path
 
 
@@ -223,6 +234,10 @@ def run_opencode(worktree_path, prompt, model, timeout, instance_id, agent=None)
             continue
         path_entries.append(p)
     env["PATH"] = os.pathsep.join(path_entries)
+
+    # Log sanitized environment for verification
+    print(f"  Environment isolation: PYTHONPATH={env.get('PYTHONPATH', '(not set)')}")
+    print(f"  PATH (sanitized): {env['PATH'][:120]}...")
 
     repo_dir = str(worktree_path)
     cmd = ["opencode", "run", prompt, "--model", model]
@@ -280,6 +295,29 @@ def _validate_patch(patch, worktree_path):
                 return False, f"file outside workspace: {file_path}"
 
     return True, None
+
+
+def verify_workspace_isolation(worktree_path):
+    """Verify that all git-tracked modifications are within the workspace.
+
+    Returns list of violating files (should be empty).
+    """
+    result = subprocess.run(
+        ["git", "-C", str(worktree_path), "diff", "--name-only"],
+        capture_output=True, text=True,
+    )
+    modified_files = [f for f in result.stdout.strip().split('\n') if f]
+    worktree_resolved = worktree_path.resolve()
+
+    violations = []
+    for f in modified_files:
+        full_path = (worktree_path / f).resolve()
+        try:
+            full_path.relative_to(worktree_resolved)
+        except ValueError:
+            violations.append(f)
+
+    return violations
 
 
 def extract_patch(stdout, worktree_path):
@@ -451,6 +489,13 @@ def main():
                 failed_ids.append(instance_id)
             else:
                 print(f"  Patch: {len(model_patch)} chars")
+
+                # Verify workspace isolation
+                violations = verify_workspace_isolation(worktree_path)
+                if violations:
+                    print(f"  ⚠️  WORKSPACE ISOLATION VIOLATION: {violations}")
+                else:
+                    print(f"  ✓ Workspace isolation verified (all modifications within workspace)")
 
                 pred = {
                     "instance_id": instance_id,
