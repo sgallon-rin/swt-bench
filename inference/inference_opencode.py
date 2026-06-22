@@ -199,6 +199,21 @@ def setup_workspace(repo_path, base_commit, instance_id, workspace_dir):
     return worktree_path
 
 
+def create_venv(worktree_path):
+    """Create a virtual environment inside the workspace.
+
+    Returns path to the venv directory.
+    """
+    venv_path = worktree_path / ".venv"
+    print(f"  Creating virtual environment ...")
+    _run_streamed(
+        [sys.executable, "-m", "venv", str(venv_path)],
+        cwd=str(worktree_path), timeout=120, prefix="venv", err_prefix="venv",
+    )
+    print(f"  Venv created: {venv_path}")
+    return venv_path
+
+
 def cleanup_workspace(worktree_path):
     if worktree_path.exists():
         shutil.rmtree(worktree_path, ignore_errors=True)
@@ -212,7 +227,7 @@ def write_issue(worktree_path, issue_text):
     (worktree_path / "ISSUE.md").write_text(issue_text)
 
 
-def run_opencode(worktree_path, prompt, model, timeout, instance_id, agent=None):
+def run_opencode(worktree_path, prompt, model, timeout, instance_id, venv_path, agent=None):
     env = os.environ.copy()
     if HUGGINGFACE_TOKEN:
         env["HF_TOKEN"] = HUGGINGFACE_TOKEN
@@ -226,18 +241,26 @@ def run_opencode(worktree_path, prompt, model, timeout, instance_id, agent=None)
     env.pop("PIP_REQUIRE_VIRTUALENV", None)
     env.pop("PIP_USER", None)
 
-    # Sanitize PATH: remove .venv and project directories
+    # Sanitize PATH: remove .venv and project directories, then prepend venv bin
     path_entries = []
     project_root_str = str(PROJECT_ROOT)
     for p in env.get("PATH", "").split(os.pathsep):
         if ".venv" in p or project_root_str in p:
             continue
         path_entries.append(p)
+
+    # Prepend venv bin to PATH so opencode uses venv's Python
+    venv_bin = str(venv_path / "bin")
+    path_entries.insert(0, venv_bin)
     env["PATH"] = os.pathsep.join(path_entries)
 
+    # Layer 3: Prevent system Python pollution
+    env["VIRTUAL_ENV"] = str(venv_path)
+    env["PIP_TARGET"] = str(venv_path)
+
     # Log sanitized environment for verification
-    print(f"  Environment isolation: PYTHONPATH={env.get('PYTHONPATH', '(not set)')}")
-    print(f"  PATH (sanitized): {env['PATH'][:120]}...")
+    print(f"  VIRTUAL_ENV={env.get('VIRTUAL_ENV', '(not set)')}")
+    print(f"  PATH (first entry): {path_entries[0]}")
 
     repo_dir = str(worktree_path)
     cmd = ["opencode", "run", prompt, "--model", model]
@@ -298,19 +321,28 @@ def _validate_patch(patch, worktree_path):
 
 
 def verify_workspace_isolation(worktree_path):
-    """Verify that all git-tracked modifications are within the workspace.
+    """Verify ALL modifications (tracked + untracked) are within the workspace.
 
+    Uses `git status --porcelain` to catch both modified and new files.
+    Excludes .venv/ directory (created by us, not by the agent).
     Returns list of violating files (should be empty).
     """
     result = subprocess.run(
-        ["git", "-C", str(worktree_path), "diff", "--name-only"],
+        ["git", "-C", str(worktree_path), "status", "--porcelain"],
         capture_output=True, text=True,
     )
-    modified_files = [f for f in result.stdout.strip().split('\n') if f]
+    changed_files = []
+    for line in result.stdout.strip().split('\n'):
+        if line.strip():
+            file_path = line[3:].strip()
+            if file_path.startswith('.venv/'):
+                continue
+            changed_files.append(file_path)
+
     worktree_resolved = worktree_path.resolve()
 
     violations = []
-    for f in modified_files:
+    for f in changed_files:
         full_path = (worktree_path / f).resolve()
         try:
             full_path.relative_to(worktree_resolved)
@@ -318,6 +350,35 @@ def verify_workspace_isolation(worktree_path):
             violations.append(f)
 
     return violations
+
+
+def scan_log_for_external_paths(log_text, worktree_path):
+    """Scan opencode output for references to paths outside workspace.
+
+    Returns set of external absolute paths found in the log.
+    Only matches true absolute paths (starting with /home/, /Users/, etc).
+    Ignores repo-relative paths like /tests/..., /forms/..., /core/...
+    """
+    worktree_resolved = str(worktree_path.resolve())
+
+    # Match true absolute paths only (home dirs, tmp, opt, etc)
+    # Excludes repo-relative paths like /tests/..., /forms/...
+    path_pattern = re.compile(r'((?:/home/|/Users/|/opt/|/var/|/etc/|/root/)[a-zA-Z0-9_./\-]{5,})')
+
+    external_paths = set()
+    excluded_prefixes = (
+        '/usr/', '/System/', '/dev/null', '/tmp/opencode', '/private/',
+    )
+
+    for match in path_pattern.finditer(log_text):
+        path = match.group(1)
+        if path.startswith(excluded_prefixes):
+            continue
+        if path.startswith(worktree_resolved):
+            continue
+        external_paths.add(path)
+
+    return external_paths
 
 
 def extract_patch(stdout, worktree_path):
@@ -453,9 +514,11 @@ def main():
         print(f"  Repo: {repo}  Commit: {base_commit[:8]}")
 
         worktree_path = None
+        venv_path = None
         try:
             repo_path      = ensure_repo(repo, repo_cache_dir)
             worktree_path  = setup_workspace(repo_path, base_commit, instance_id, workspace_dir)
+            venv_path      = create_venv(worktree_path)
             write_issue(worktree_path, issue)
 
             print(f"  Workspace: {worktree_path}")
@@ -466,7 +529,7 @@ def main():
             log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
             print(f"  Log → {log_file}")
             t0 = time.time()
-            result = run_opencode(worktree_path, prompt, args.model, args.timeout, instance_id, args.agent)
+            result = run_opencode(worktree_path, prompt, args.model, args.timeout, instance_id, venv_path, args.agent)
             elapsed = time.time() - t0
             print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
 
@@ -490,12 +553,19 @@ def main():
             else:
                 print(f"  Patch: {len(model_patch)} chars")
 
-                # Verify workspace isolation
+                # Verify workspace isolation (tracked + untracked files)
                 violations = verify_workspace_isolation(worktree_path)
                 if violations:
                     print(f"  ⚠️  WORKSPACE ISOLATION VIOLATION: {violations}")
                 else:
                     print(f"  ✓ Workspace isolation verified (all modifications within workspace)")
+
+                # Scan log for external path references
+                external_refs = scan_log_for_external_paths(result.stdout + result.stderr, worktree_path)
+                if external_refs:
+                    print(f"  ⚠️  EXTERNAL PATH REFERENCES: {external_refs}")
+                else:
+                    print(f"  ✓ No external path references in log")
 
                 pred = {
                     "instance_id": instance_id,
@@ -522,6 +592,7 @@ def main():
         finally:
             if worktree_path is not None:
                 cleanup_workspace(worktree_path)
+            venv_path = None  # venv is inside worktree_path, already cleaned up
 
     total_run = len(success_ids) + len(failed_ids)
     print(f"\n{'=' * 60}")
