@@ -3,11 +3,12 @@
 SWT-Bench Inference.
 
 For each instance:
-  1. Clone the repo (cached) and checkout the base commit
-  2. Run a code agent to generate a reproducing test
-  3. Extract git diff from the agent's output
-  4. Append to JSONL predictions file
-  5. Cleanup workspace
+  1. Ensure repo in cache (clone if missing)
+  2. Copy repo to <run-id>/<instance-id>/<repo> and checkout base commit
+  3. Run opencode to generate a reproducing test
+  4. Extract git diff from the agent's output
+  5. Append to JSONL predictions file
+  6. Cleanup workspace
 
 Supports resume: re-running skips already-completed instances.
 
@@ -15,13 +16,13 @@ Usage:
     python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash
 
     # With specific agent
-    python inference/inference_opencode.py --max-instances 5 --agent agent_name
+    python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash --agent agent_name
 
     # With custom dataset / git mirror
     GIT_BASE_URL=https://hub.nuaa.cf python inference/inference_opencode.py --max-instances 5
 
     # With run_id for resume (same run_id resumes, different run_id is independent)
-    python inference/inference_opencode.py --max-instances 5 --run-id exp1
+    python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash --run-id 20260622
 """
 
 import argparse
@@ -164,25 +165,25 @@ def ensure_repo(repo, repo_cache_dir):
 
 
 def setup_workspace(repo_path, base_commit, instance_id, workspace_dir):
-    """Create an isolated workspace by cloning from the cached repo.
+    """Create an isolated workspace by copying from the cached repo.
 
-    Uses git's local clone optimisation (hardlinks).
+    Copies the entire repo folder into <workspace_dir>/<instance_id>/<repo>.
     """
-    worktree_path = workspace_dir / instance_id
+    safe_repo_name = repo_path.name  # e.g. "owner__repo"
+    instance_dir = workspace_dir / instance_id
+    worktree_path = instance_dir / safe_repo_name
 
-    if worktree_path.exists():
-        shutil.rmtree(worktree_path)
+    if instance_dir.exists():
+        shutil.rmtree(instance_dir)
 
-    workspace_dir.mkdir(parents=True, exist_ok=True)
+    instance_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"  Creating workspace ...")
-    _run_streamed(
-        ["git", "clone", "--quiet", str(repo_path), str(worktree_path)],
-        cwd=workspace_dir, timeout=120, prefix="git", err_prefix="git",
-    )
+    print(f"  Copying repo to workspace ...")
+    shutil.copytree(str(repo_path), str(worktree_path), symlinks=True)
+
     _run_streamed(
         ["git", "-C", str(worktree_path), "checkout", "--detach", base_commit],
-        cwd=workspace_dir, timeout=60, prefix="git", err_prefix="git",
+        cwd=str(instance_dir), timeout=60, prefix="git", err_prefix="git",
     )
     return worktree_path
 
@@ -200,7 +201,7 @@ def write_issue(worktree_path, issue_text):
     (worktree_path / "ISSUE.md").write_text(issue_text)
 
 
-def run_opencode(worktree_path, prompt, model, timeout, agent=None):
+def run_opencode(worktree_path, prompt, model, timeout, instance_id, agent=None):
     env = os.environ.copy()
     if HUGGINGFACE_TOKEN:
         env["HF_TOKEN"] = HUGGINGFACE_TOKEN
@@ -223,13 +224,15 @@ def run_opencode(worktree_path, prompt, model, timeout, agent=None):
         path_entries.append(p)
     env["PATH"] = os.pathsep.join(path_entries)
 
-    cmd = ["opencode", "run", prompt, "--model", model]
+    repo_dir = str(worktree_path)
+    cmd = ["opencode", "-m", model]
     if agent:
         cmd.extend(["--agent", agent])
+    cmd.extend(["--title", instance_id, "--dir", repo_dir])
 
     return _run_streamed(
         cmd,
-        cwd=str(worktree_path),
+        cwd=repo_dir,
         timeout=timeout,
         prefix="opencode",
         err_prefix="opencode",
@@ -359,7 +362,7 @@ def main():
 
     repo_cache_dir = Path(args.repo_cache)
     repo_cache_dir.mkdir(parents=True, exist_ok=True)
-    workspace_dir = Path(args.workspace_dir) / run_ts
+    workspace_dir = Path(args.workspace_dir) / run_tag
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # --- load dataset ------------------------------------------------------
@@ -417,13 +420,15 @@ def main():
             worktree_path  = setup_workspace(repo_path, base_commit, instance_id, workspace_dir)
             write_issue(worktree_path, issue)
 
+            print(f"  Workspace: {worktree_path}")
+
             prompt = prompt_template.format(issue=issue)
 
             print(f"  Running opencode (model={args.model}, agent={args.agent}, timeout={args.timeout}s) ...")
-            log_file = workspace_dir / f"{instance_id}_opencode.log"
+            log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
             print(f"  Log → {log_file}")
             t0 = time.time()
-            result = run_opencode(worktree_path, prompt, args.model, args.timeout, args.agent)
+            result = run_opencode(worktree_path, prompt, args.model, args.timeout, instance_id, args.agent)
             elapsed = time.time() - t0
             print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
 
