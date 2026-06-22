@@ -25,17 +25,22 @@ Usage:
     python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash --run-id 20260622
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import argparse
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import traceback
-from pathlib import Path
+import base64
+
+from docker_utils import ensure_base_image, get_base_image_name, get_arch
 
 # --- Defaults ---
 DEFAULT_DATASET = "eth-sri/SWT-bench_Lite_bm25_27k_zsb"
@@ -295,6 +300,59 @@ def run_opencode(worktree_path, prompt, model, timeout, instance_id, venv_path, 
     )
 
 
+def run_opencode_docker(worktree_path, prompt, model, timeout, instance_id, agent=None):
+    prompt_b64 = base64.b64encode(prompt.encode()).decode()
+
+    agent_flag = f"--agent {agent}" if agent else ""
+    setup_script = f"""#!/bin/bash
+set -e
+export HOME=/home/agent
+mkdir -p /home/agent/.config /home/agent/.local/share
+git config --global --add safe.directory /workspace
+echo "  [setup] Creating venv..."
+python3 -m venv .venv
+echo "  [setup] Installing dependencies..."
+.venv/bin/pip install --quiet -e . 2>&1 | tail -3
+echo "  [setup] Running opencode..."
+OPCODE_PROMPT=$(echo {prompt_b64} | base64 -d)
+opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id} --dir /workspace
+"""
+    script_file = worktree_path / "opencode_docker.sh"
+    script_file.write_text(setup_script)
+
+    image_name = get_base_image_name(get_arch())
+
+    home_path = Path.home()
+    auth_dir = home_path / ".local/share/opencode"
+    config_dir = home_path / ".config/opencode"
+
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{worktree_path}:/workspace",
+    ]
+
+    if auth_dir.exists():
+        cmd.extend(["-v", f"{auth_dir}:/home/agent/.local/share/opencode"])
+    if config_dir.exists():
+        cmd.extend(["-v", f"{config_dir}:/home/agent/.config/opencode"])
+
+    cmd.extend([
+        "--workdir", "/workspace",
+        image_name,
+        "bash", str(script_file.relative_to(worktree_path)),
+    ])
+
+    return _run_streamed(
+        cmd,
+        cwd=worktree_path,
+        timeout=timeout,
+        prefix="opencode",
+        err_prefix="opencode",
+        check=False,
+        quiet_stderr=True,
+    )
+
+
 def _filesystem_diff(worktree_path):
     """Fallback: run git diff in workspace."""
     subprocess.run(
@@ -458,6 +516,8 @@ def main():
                         help="opencode agent to use (default: none)")
     parser.add_argument("--run-id", default=None,
                         help="Run identifier for resume. Same run_id resumes (skip success, retry fail). Different run_id is independent.")
+    parser.add_argument("--docker", action="store_true", default=False,
+                        help="Run opencode inside a Docker container for sandboxed inference")
 
     args = parser.parse_args()
 
@@ -515,6 +575,12 @@ def main():
 
     prompt_template = load_prompt_template()
 
+    if args.docker:
+        print(f"\n  Building/ensuring inference Docker image ...")
+        docker_image = ensure_base_image()
+        print(f"  Inference Docker image: {docker_image}")
+        print(f"  All opencode execution will run inside Docker containers\n")
+
     # --- process instances -------------------------------------------------
     success_ids = []
     failed_ids = []
@@ -533,21 +599,32 @@ def main():
         try:
             repo_path      = ensure_repo(repo, repo_cache_dir)
             worktree_path  = setup_workspace(repo_path, base_commit, instance_id, workspace_dir)
-            venv_path      = create_venv(worktree_path)
-            install_deps(venv_path, worktree_path)
             write_issue(worktree_path, issue)
-
-            print(f"  Workspace: {worktree_path}")
 
             prompt = prompt_template.format(issue=issue)
 
-            print(f"  Running opencode (model={args.model}, agent={args.agent}, timeout={args.timeout}s) ...")
-            log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
-            print(f"  Log → {log_file}")
-            t0 = time.time()
-            result = run_opencode(worktree_path, prompt, args.model, args.timeout, instance_id, venv_path, args.agent)
-            elapsed = time.time() - t0
-            print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
+            if args.docker:
+                print(f"  Docker workspace: {worktree_path}")
+                print(f"  Running opencode in Docker (model={args.model}, agent={args.agent}, timeout={args.timeout}s) ...")
+                log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
+                print(f"  Log → {log_file}")
+                t0 = time.time()
+                result = run_opencode_docker(worktree_path, prompt, args.model, args.timeout, instance_id, args.agent)
+                elapsed = time.time() - t0
+                print(f"\n  --- opencode (Docker) finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
+            else:
+                venv_path      = create_venv(worktree_path)
+                install_deps(venv_path, worktree_path)
+
+                print(f"  Workspace: {worktree_path}")
+
+                print(f"  Running opencode (model={args.model}, agent={args.agent}, timeout={args.timeout}s) ...")
+                log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
+                print(f"  Log → {log_file}")
+                t0 = time.time()
+                result = run_opencode(worktree_path, prompt, args.model, args.timeout, instance_id, venv_path, args.agent)
+                elapsed = time.time() - t0
+                print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
 
             # Save raw opencode output for debugging
             log_file.write_text(
@@ -626,11 +703,13 @@ def main():
     if failed_ids:
         failed_ids_str = ' '.join(failed_ids)
         agent_flag = f'--agent {args.agent} ' if args.agent else ''
+        docker_flag = '--docker ' if args.docker else ''
         print(f"⚠️  {len(failed_ids)} instance(s) failed. Retry:")
         print(f"   python inference/inference_opencode.py \\")
         print(f"       --instance-ids {failed_ids_str} \\")
         print(f"       --model {args.model} \\")
         print(f"       {agent_flag}\\")
+        print(f"       {docker_flag}\\")
         print(f"       --run-id {run_tag}")
         print()
         print(f"1️⃣  Evaluate (after retrying):")

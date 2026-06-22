@@ -1,0 +1,39 @@
+FROM --platform=${TARGETPLATFORM} ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt update && apt install -y \
+    wget \
+    curl \
+    git \
+    build-essential \
+    libffi-dev \
+    libtiff-dev \
+    python3 \
+    python3-pip \
+    python-is-python3 \
+    python3-venv \
+    jq \
+    locales \
+    locales-all \
+    tzdata \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN adduser --disabled-password --gecos 'agent' agent
+
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      arm64) OCODE_ARCH="arm64" ;; \
+      amd64) OCODE_ARCH="x64" ;; \
+      *)     OCODE_ARCH="x64" ;; \
+    esac && \
+    curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v1.17.9/opencode-linux-${OCODE_ARCH}.tar.gz" \
+      -o /tmp/opencode.tar.gz && \
+    tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
+    chmod +x /usr/local/bin/opencode && \
+    rm /tmp/opencode.tar.gz
+
+RUN mkdir -p /workspace && chown -R agent:agent /workspace
+WORKDIR /workspace

@@ -4,7 +4,9 @@ Generates reproducing test predictions for SWT-Bench instances using code agents
 
 Using mirror is STRONGLY RECOMMENDED for users having trouble connecting to `huggingface`, `docker`, `conda`, `github`, etc.
 
-Currently, inferencing with opencode is in local environment without sandboxing.
+Supports two execution modes:
+- **Local mode** (default): opencode runs directly on the host, isolated via venv + PATH sanitization
+- **Docker mode** (`--docker`): opencode runs inside a Docker container with true sandboxing
 
 ## Prerequisite
 
@@ -47,8 +49,12 @@ hf download eth-sri/SWT-bench_Lite_bm25_27k_zsb --repo-type dataset
 Run Infernece
 
 ```bash
-# Run 5 instances with opencode
+# LOCAL MODE — Run 5 instances with opencode (default)
 python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash
+
+# DOCKER MODE — Run 5 instances with opencode inside Docker (recommended for clean env)
+DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock \
+python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash --docker
 
 # Run with a specific agent
 python inference/inference_opencode.py --max-instances 5 --model deepseek/deepseek-v4-flash --agent agent_name
@@ -122,18 +128,120 @@ This ensures different model/agent combinations produce separate output files, e
 
 ## How It Works
 
+### Local Mode
+
 ```
  For each SWT-Bench instance:
  ┌─ 1. Clone the target repo (cached in repo-cache/)
  ├─ 2. Checkout the buggy base commit in an isolated workspace
- ├─ 3. Run the code agent with the task prompt
+ ├─ 3. Create venv + install deps on host
+ ├─ 4. Run the code agent with the task prompt
  │      Agent explores code, writes a reproducing test, verifies it FAILS
- ├─ 4. Extract the git diff from the agent's output
- ├─ 5. Append {instance_id, model_name_or_path, model_patch} to JSONL
- └─ 6. Cleanup workspace
+ ├─ 5. Extract the git diff from the agent's output
+ ├─ 6. Append {instance_id, model_name_or_path, model_patch} to JSONL
+ └─ 7. Cleanup workspace
 ```
 
-Resume-safe: re-running skips instances already in the output JSONL.
+### Docker Mode (`--docker`)
+
+```
+ For each SWT-Bench instance:
+ ┌─ 1. Clone the target repo (cached in repo-cache/)          ← Host
+ ├─ 2. Checkout the buggy base commit in an isolated workspace  ← Host
+ ├─ 3. Write issue file to workspace                            ← Host
+ ├─ 4. Spin up Docker container with workspace mounted          ← Docker boundary
+ ├─ 5. Create venv + pip install -e . inside container          ← Container
+ ├─ 6. Run opencode inside container                            ← Container
+ │      Agent explores code, writes a reproducing test, verifies it FAILS
+ ├─ 7. Container exits, all modifications stay in workspace     ← Docker boundary
+ ├─ 8. Extract the git diff from the agent's output             ← Host
+ ├─ 9. Append {instance_id, model_name_or_path, model_patch} to JSONL  ← Host
+ └─10. Cleanup workspace                                        ← Host
+```
+
+Docker provides **true operating-system-level isolation**:
+- opencode cannot write files outside the mounted workspace
+- pip installs are sandboxed inside the container
+- No PATH/env sanitization needed (Docker provides a clean environment)
+- Workspace isolation is guaranteed by Docker, not Python-level checks
+
+## Docker-Based Inference
+
+### Architecture
+
+The Docker inference follows the same three-layer image hierarchy as evaluation, with a
+separate naming prefix (`swt-inf.*`) to avoid conflicts with evaluation images (`exec.*`):
+
+```
+swt-inf.base.x86_64:latest       ← Ubuntu 22.04 + opencode + git + python
+        ↓                           Built once, shared by all instances
+swt-inf.env.{repo}.{hash}:latest  ← (planned) Pre-installed repo dependencies
+        ↓                           Shared by instances of the same repo
+Container (per-instance)          ← Mount workspace, run opencode, destroy
+```
+
+Currently only the base image layer is implemented. Env-layer images with
+pre-installed repo dependencies can be added later for faster per-instance setup.
+
+### Prerequisites
+
+The inference Docker image requires opencode CLI credentials. The container
+automatically mounts your host's opencode config:
+
+| Host path | Container path | Purpose |
+|-----------|---------------|---------|
+| `~/.config/opencode/` | `/home/agent/.config/opencode/` | opencode configuration |
+| `~/.local/share/opencode/` | `/home/agent/.local/share/opencode/` | API auth credentials |
+
+Make sure opencode is authenticated on the host before running with `--docker`:
+
+```bash
+opencode providers login  # or configure via opencode auth
+```
+
+### Image Build
+
+The base image is built automatically on the first `--docker` run:
+
+```bash
+python inference/inference_opencode.py --max-instances 1 --model deepseek/deepseek-v4-flash --docker
+```
+
+Output:
+```
+  Building/ensuring inference Docker image ...
+  Inference Docker image: swt-inf.base.x86_64:latest
+  All opencode execution will run inside Docker containers
+```
+
+Subsequent runs skip the build check. The image is ~870 MB.
+
+To force rebuild:
+```bash
+docker buildx build --platform linux/amd64 --tag swt-inf.base.x86_64:latest \
+    --file inference/Dockerfile.base --load inference/
+```
+
+### macOS Setup
+
+On macOS, Docker Desktop must be running and the socket path must be exported:
+
+```bash
+export DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock
+```
+
+Add this to your shell profile (`.zshrc` / `.bashrc`) for convenience.
+
+### Comparison: Local vs Docker
+
+| Aspect | Local mode | Docker mode |
+|--------|-----------|-------------|
+| File isolation | PATH + venv hack | Docker boundary |
+| pip install safety | Host venv (leaks) | Container sandbox |
+| opencode isolation | Best-effort | Guaranteed |
+| Reproduce version mismatch | Host Python | Fixed Python 3.10 |
+| Host pollution risk | Moderate | None |
+| Speed | Faster (no container overhead) | ~2-5s container startup |
 
 ## Arguments
 
@@ -142,6 +250,7 @@ Resume-safe: re-running skips instances already in the output JSONL.
 | `--dataset` | `eth-sri/SWT-bench_Lite_bm25_27k_zsb` | HuggingFace dataset name |
 | `--model` | `deepseek/deepseek-v4-flash` | Model name (passed to the agent) |
 | `--agent` | `None` | opencode agent to use (default: none) |
+| `--docker` | `False` | Run opencode inside a Docker container for sandboxed inference |
 | `--run-id` | `None` | Run identifier for resume. Same ID resumes (skip success, retry fail). Different IDs are independent. |
 | `--max-instances` | all | Limit number of instances to process |
 | `--instance-ids` | — | Run only these specific IDs (overrides max) |
@@ -191,12 +300,15 @@ Prompt templates are in `prompts/`. The default prompt for opencode is `prompts/
 ```
 inference/
 ├── README.md
-└── inference_opencode.py
+├── inference_opencode.py    # Main inference script (supports --docker)
+├── docker_utils.py          # Docker image build/cache + container helpers
+├── Dockerfile.base          # Inference base image (opencode + python + git)
+└── __init__.py
 
 prompts/
-├── SWE-Agent.txt           # Original SWE-Agent base prompt
-├── SWE-Agent-plus.txt      # Original SWE-Agent plus prompt
-└── opencode.txt            # Adapted prompt for opencode (based on plus)
+├── SWE-Agent.txt            # Original SWE-Agent base prompt
+├── SWE-Agent-plus.txt       # Original SWE-Agent plus prompt
+└── opencode.txt             # Adapted prompt for opencode (based on plus)
 ```
 
 
@@ -215,10 +327,19 @@ Output: `dataset/swt_bench_lite_subset.txt` (51 instances after filtering)
 ### Run inference on the subset
 
 ```bash
+# Local mode
 python inference/inference_opencode.py \
     --instance-ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
     --model deepseek/deepseek-v4-flash \
     --agent dt-generation
+
+# Docker mode (recommended)
+DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock \
+python inference/inference_opencode.py \
+    --instance-ids $(cat dataset/swt_bench_lite_subset.txt | tr '\n' ' ') \
+    --model deepseek/deepseek-v4-flash \
+    --agent dt-generation \
+    --docker
 ```
 
 ### Evaluate the subset
