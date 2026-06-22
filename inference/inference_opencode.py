@@ -214,6 +214,21 @@ def create_venv(worktree_path):
     return venv_path
 
 
+def install_deps(venv_path, worktree_path):
+    """Install project dependencies into the venv.
+
+    Uses venv's own pip to install in editable mode.
+    """
+    pip = str(venv_path / "bin" / "pip")
+    print(f"  Installing dependencies (pip install -e .) ...")
+    _run_streamed(
+        [pip, "install", "--quiet", "-e", "."],
+        cwd=str(worktree_path), timeout=600, prefix="pip", err_prefix="pip",
+        check=False,
+    )
+    print(f"  Dependencies installed")
+
+
 def cleanup_workspace(worktree_path):
     if worktree_path.exists():
         shutil.rmtree(worktree_path, ignore_errors=True)
@@ -254,9 +269,9 @@ def run_opencode(worktree_path, prompt, model, timeout, instance_id, venv_path, 
     path_entries.insert(0, venv_bin)
     env["PATH"] = os.pathsep.join(path_entries)
 
-    # Layer 3: Prevent system Python pollution
+    # Layer 3: Environment isolation via venv
     env["VIRTUAL_ENV"] = str(venv_path)
-    env["PIP_TARGET"] = str(venv_path)
+    env["PIP_REQUIRE_VIRTUALENV"] = "1"
 
     # Log sanitized environment for verification
     print(f"  VIRTUAL_ENV={env.get('VIRTUAL_ENV', '(not set)')}")
@@ -519,6 +534,7 @@ def main():
             repo_path      = ensure_repo(repo, repo_cache_dir)
             worktree_path  = setup_workspace(repo_path, base_commit, instance_id, workspace_dir)
             venv_path      = create_venv(worktree_path)
+            install_deps(venv_path, worktree_path)
             write_issue(worktree_path, issue)
 
             print(f"  Workspace: {worktree_path}")
