@@ -12,7 +12,7 @@ Architecture:
       ↓ add opencode (~10s)
   inference image (swt-inf.eval.{arch}.{env_hash}.{instance_hash})
       ↓ run: --user nonroot, WORKDIR /testbed
-      ↓ mount: ~/.opencode → /home/dog/.opencode
+      ↓ mount: ~/.opencode → /home/nonroot/.opencode
       ↓ execute: conda activate testbed && opencode run ...
 
 Usage:
@@ -314,17 +314,17 @@ def check_agent_in_container(inference_image: str, agent: str, timeout: int = 30
 
     # Mount config directories
     if auth_dir.exists():
-        cmd.extend(["-v", f"{auth_dir}:/home/dog/.local/share/opencode"])
+        cmd.extend(["-v", f"{auth_dir}:/home/nonroot/.local/share/opencode"])
     if config_dir.exists():
-        cmd.extend(["-v", f"{config_dir}:/home/dog/.config/opencode"])
+        cmd.extend(["-v", f"{config_dir}:/home/nonroot/.config/opencode"])
     if opencode_dir.exists():
-        cmd.extend(["-v", f"{opencode_dir}:/home/dog/.opencode"])
+        cmd.extend(["-v", f"{opencode_dir}:/home/nonroot/.opencode"])
 
     cmd.extend([
         "--workdir", "/testbed",
         inference_image,
         "bash", "-c",
-        "source /opt/miniconda3/bin/activate && conda activate testbed && opencode agent list",
+        f"source /opt/miniconda3/bin/activate && conda activate testbed && opencode agent list 2>&1 | grep '{agent} (primary)'",
     ])
 
     try:
@@ -335,10 +335,24 @@ def check_agent_in_container(inference_image: str, agent: str, timeout: int = 30
             prefix="agent-check",
             err_prefix="agent-check",
             check=False,
+            quiet_stderr=True,
         )
-        combined = (result.stdout or "") + (result.stderr or "")
-        if agent in combined:
-            return True
+        if result.returncode == 0:
+            return True  # grep found the agent
+
+        # Failed - run again without grep to show available agents for debugging
+        debug_cmd = cmd[:-1] + [
+            "bash", "-c",
+            "source /opt/miniconda3/bin/activate && conda activate testbed && opencode agent list 2>&1",
+        ]
+        debug_result = _run_streamed(
+            debug_cmd,
+            cwd="/tmp",
+            timeout=timeout,
+            prefix="agent-check-debug",
+            err_prefix="agent-check-debug",
+            check=False,
+        )
         return False
     except subprocess.TimeoutExpired:
         print(f"  WARNING: Agent check timed out, proceeding anyway")
@@ -364,7 +378,7 @@ def run_opencode_docker_v2(
     # Create the script to run inside the container
     setup_script = f"""#!/bin/bash
 set -e
-export HOME=/home/dog
+export HOME=/home/nonroot
 source /opt/miniconda3/bin/activate
 conda activate testbed
 cd /testbed
@@ -392,11 +406,11 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
 
         # Mount opencode config directories
         if auth_dir.exists():
-            cmd.extend(["-v", f"{auth_dir}:/home/dog/.local/share/opencode"])
+            cmd.extend(["-v", f"{auth_dir}:/home/nonroot/.local/share/opencode"])
         if config_dir.exists():
-            cmd.extend(["-v", f"{config_dir}:/home/dog/.config/opencode"])
+            cmd.extend(["-v", f"{config_dir}:/home/nonroot/.config/opencode"])
         if opencode_dir.exists():
-            cmd.extend(["-v", f"{opencode_dir}:/home/dog/.opencode"])
+            cmd.extend(["-v", f"{opencode_dir}:/home/nonroot/.opencode"])
 
         cmd.extend([
             "--workdir", "/testbed",
@@ -619,8 +633,13 @@ def main():
 
             prompt = prompt_template.format(issue=issue)
 
+            # Map dataset fields to SWEbenchInstance format expected by make_exec_spec
+            exec_instance = dict(instance)
+            exec_instance["golden_code_patch"] = instance.get("patch", "")
+            exec_instance["golden_test_patch"] = instance.get("test_patch", "")
+
             # Create exec_spec to get image keys
-            exec_spec = make_exec_spec(instance)
+            exec_spec = make_exec_spec(exec_instance)
 
             # Step 1: Ensure src instance image exists
             print(f"  Checking src instance image...")
