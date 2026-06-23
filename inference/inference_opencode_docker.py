@@ -172,22 +172,53 @@ def ensure_repo(repo, repo_cache_dir):
 
 
 def setup_workspace(repo_path, base_commit, instance_id, workspace_dir):
-    """Create an isolated workspace by copying from the cached repo."""
+    """Create an isolated workspace by copying from the cached repo.
+
+    After copying, removes all commits after base_commit to prevent the agent
+    from seeing newer commits that might contain the fix.
+    """
     safe_repo_name = repo_path.name
     instance_dir = workspace_dir / instance_id
     worktree_path = instance_dir / safe_repo_name
 
     if instance_dir.exists():
-        shutil.rmtree(instance_dir)
+        shutil.rmtree(instance_dir, ignore_errors=True)
 
     instance_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"  Copying repo to workspace ...")
     shutil.copytree(str(repo_path), str(worktree_path), symlinks=True)
 
+    # Checkout the base commit
     _run_streamed(
         ["git", "-C", str(worktree_path), "checkout", "--detach", base_commit],
         cwd=str(instance_dir), timeout=60, prefix="git", err_prefix="git",
+    )
+
+    # Remove all branches to prevent access to commits after base_commit
+    _run_streamed(
+        ["git", "-C", str(worktree_path), "branch", "-D", "main", "master", "develop"],
+        cwd=str(instance_dir), timeout=10, prefix="git", err_prefix="git",
+        check=False,  # Ignore errors if branches don't exist
+    )
+
+    # Remove remote to prevent fetching newer commits
+    _run_streamed(
+        ["git", "-C", str(worktree_path), "remote", "remove", "origin"],
+        cwd=str(instance_dir), timeout=10, prefix="git", err_prefix="git",
+        check=False,
+    )
+
+    # Expire reflog and prune unreachable objects
+    _run_streamed(
+        ["git", "-C", str(worktree_path), "reflog", "expire", "--expire=now", "--all"],
+        cwd=str(instance_dir), timeout=10, prefix="git", err_prefix="git",
+        check=False,
+    )
+    _run_streamed(
+        ["git", "-C", str(worktree_path), "gc", "--prune=now"],
+        cwd=str(instance_dir), timeout=30, prefix="git", err_prefix="git",
+        check=False,
     )
 
     result = _run_streamed(
@@ -274,6 +305,7 @@ def build_inference_image(src_instance_key: str, arch: str) -> str:
     # Create Dockerfile that adds opencode on top of src instance image
     dockerfile = f"""FROM {src_instance_key}
 RUN mkdir -p /home/nonroot/.local/state && chown -R nonroot:nonroot /home/nonroot/.local
+RUN chown -R nonroot:nonroot /testbed
 RUN curl -fsSL "https://github.com/anomalyco/opencode/releases/download/{OPCODE_VERSION}/opencode-linux-{ocode_arch}.tar.gz" \\
     | tar xz -C /usr/local/bin opencode
 """
@@ -503,6 +535,34 @@ def extract_patch(stdout, worktree_path):
     return ""
 
 
+def is_valid_patch(stdout, patch):
+    """Check if agent explicitly output a patch with markers.
+
+    Returns (is_valid, reason) tuple.
+    """
+    if not patch:
+        return False, "empty patch"
+
+    # Check if agent explicitly output the patch with markers
+    if "=== PATCH_START ===" not in stdout:
+        return False, "agent did not output === PATCH_START === marker"
+
+    return True, None
+
+
+def get_patch_files(patch):
+    """Extract list of files modified in the patch (for debugging)."""
+    if not patch:
+        return []
+    files = []
+    for line in patch.split('\n'):
+        if line.startswith('diff --git a/'):
+            parts = line.split('diff --git a/')[1].split(' b/')
+            if len(parts) == 2:
+                files.append(parts[0])
+    return files
+
+
 def verify_workspace_isolation(worktree_path):
     """Verify ALL modifications are within the workspace."""
     result = subprocess.run(
@@ -686,8 +746,15 @@ def main():
                     print(f"  ... ({len(lines) - 20} more lines in log file)")
 
             model_patch = extract_patch(result.stdout, worktree_path)
-            if not model_patch:
-                print("  WARNING: empty patch extracted")
+
+            # Validate: agent must explicitly output === PATCH_START === marker
+            is_valid, reason = is_valid_patch(result.stdout, model_patch)
+            if not is_valid:
+                print(f"  WARNING: {reason}")
+                if model_patch:
+                    # Show what git diff captured (for debugging)
+                    files = get_patch_files(model_patch)
+                    print(f"  git diff captured: {', '.join(files)}")
                 failed_ids.append(instance_id)
             else:
                 print(f"  Patch: {len(model_patch)} chars")
