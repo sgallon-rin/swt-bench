@@ -273,6 +273,7 @@ def build_inference_image(src_instance_key: str, arch: str) -> str:
 
     # Create Dockerfile that adds opencode on top of src instance image
     dockerfile = f"""FROM {src_instance_key}
+RUN mkdir -p /home/nonroot/.local/state && chown -R nonroot:nonroot /home/nonroot/.local
 RUN curl -fsSL "https://github.com/anomalyco/opencode/releases/download/{OPCODE_VERSION}/opencode-linux-{ocode_arch}.tar.gz" \\
     | tar xz -C /usr/local/bin opencode
 """
