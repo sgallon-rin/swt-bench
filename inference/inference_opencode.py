@@ -28,6 +28,7 @@ Usage:
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import json
@@ -41,6 +42,7 @@ import traceback
 import base64
 
 from docker_utils import ensure_base_image, get_base_image_name, get_arch
+from src.constants import MAP_VERSION_TO_INSTALL
 
 # --- Defaults ---
 DEFAULT_DATASET = "eth-sri/SWT-bench_Lite_bm25_27k_zsb"
@@ -300,11 +302,76 @@ def run_opencode(worktree_path, prompt, model, timeout, instance_id, venv_path, 
     )
 
 
-def run_opencode_docker(worktree_path, prompt, model, timeout, instance_id, agent=None):
+def generate_env_setup_script(repo, version):
+    """Generate environment setup script based on MAP_VERSION_TO_INSTALL.
+
+    Mirrors the logic in src/exec_spec.py: env_script_list + req_install_commands.
+    Returns a string of bash commands to set up the conda environment.
+    """
+    install = MAP_VERSION_TO_INSTALL.get(repo, {}).get(version, {})
+    if not install:
+        return None  # No config found, use fallback
+
+    env_name = "testbed"
+    commands = ["source /opt/miniconda3/bin/activate"]
+
+    pkgs = install.get("packages", "")
+    python_version = install.get("python", "3.10")
+
+    if pkgs == "requirements.txt":
+        # Create environment + install from requirements.txt
+        commands.append(f"conda create -n {env_name} python={python_version} -y")
+        # requirements.txt content will be copied from workspace at runtime
+        commands.append(f"cp /workspace/requirements.txt $HOME/requirements.txt 2>/dev/null || true")
+        commands.append(f"conda activate {env_name} && python -m pip install -r $HOME/requirements.txt 2>/dev/null || true")
+    elif pkgs == "environment.yml":
+        # Create environment from environment.yml
+        commands.append(f"cp /workspace/environment.yml /workspace/environment.yml.bak 2>/dev/null || true")
+        commands.append(f"conda env create --file /workspace/environment.yml 2>/dev/null || conda create -n {env_name} python={python_version} -y")
+        commands.append(f"conda activate {env_name} && conda install python={python_version} -y 2>/dev/null || true")
+    else:
+        # Create environment + install specified packages
+        cmd = f"conda create -n {env_name} python={python_version} {pkgs} -y"
+        commands.append(cmd)
+
+    commands.append(f"conda activate {env_name}")
+
+    # Install pip_packages if specified
+    pip_packages = install.get("pip_packages", [])
+    if pip_packages:
+        pip_pkgs_str = " ".join(pip_packages)
+        commands.append(f"python -m pip install {pip_pkgs_str}")
+
+    return "\n".join(commands)
+
+
+def run_opencode_docker(worktree_path, prompt, model, timeout, instance_id, agent=None, repo=None, version=None):
     prompt_b64 = base64.b64encode(prompt.encode()).decode()
 
     agent_flag = f"--agent {agent}" if agent else ""
-    setup_script = f"""#!/bin/bash
+
+    # Try to generate environment setup from MAP_VERSION_TO_INSTALL
+    env_setup = generate_env_setup_script(repo, version) if repo and version else None
+
+    if env_setup:
+        # Use conda-based setup from MAP_VERSION_TO_INSTALL
+        setup_script = f"""#!/bin/bash
+set -e
+export HOME=/home/agent
+mkdir -p /home/agent/.config /home/agent/.local/share
+git config --global --add safe.directory /workspace
+echo "  [setup] Setting up conda environment (python={MAP_VERSION_TO_INSTALL.get(repo, {}).get(version, {}).get('python', 'unknown')})..."
+{env_setup}
+echo "  [setup] Installing project..."
+cd /workspace
+python -m pip install --quiet -e . 2>&1 | tail -3
+echo "  [setup] Running opencode..."
+OPCODE_PROMPT=$(echo {prompt_b64} | base64 -d)
+opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id} --dir /workspace
+"""
+    else:
+        # Fallback: simple venv-based setup
+        setup_script = f"""#!/bin/bash
 set -e
 export HOME=/home/agent
 mkdir -p /home/agent/.config /home/agent/.local/share
@@ -325,6 +392,7 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
     home_path = Path.home()
     auth_dir = home_path / ".local/share/opencode"
     config_dir = home_path / ".config/opencode"
+    opencode_dir = home_path / ".opencode"
 
     cmd = [
         "docker", "run", "--rm",
@@ -335,6 +403,8 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
         cmd.extend(["-v", f"{auth_dir}:/home/agent/.local/share/opencode"])
     if config_dir.exists():
         cmd.extend(["-v", f"{config_dir}:/home/agent/.config/opencode"])
+    if opencode_dir.exists():
+        cmd.extend(["-v", f"{opencode_dir}:/home/agent/.opencode"])
 
     cmd.extend([
         "--workdir", "/workspace",
@@ -351,6 +421,52 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
         check=False,
         quiet_stderr=True,
     )
+
+
+def check_agent_in_container(worktree_path, agent, timeout=30):
+    """Run `opencode agent list` in the Docker container to verify the agent exists.
+
+    Returns True if agent is found, False otherwise.
+    """
+    if agent is None:
+        return True  # no agent specified
+
+    image_name = get_base_image_name(get_arch())
+    home_path = Path.home()
+    auth_dir = home_path / ".local/share/opencode"
+    config_dir = home_path / ".config/opencode"
+    opencode_dir = home_path / ".opencode"
+
+    cmd = ["docker", "run", "--rm"]
+    cmd.extend(["-v", f"{worktree_path}:/workspace"])
+    if auth_dir.exists():
+        cmd.extend(["-v", f"{auth_dir}:/home/agent/.local/share/opencode"])
+    if config_dir.exists():
+        cmd.extend(["-v", f"{config_dir}:/home/agent/.config/opencode"])
+    if opencode_dir.exists():
+        cmd.extend(["-v", f"{opencode_dir}:/home/agent/.opencode"])
+    cmd.extend([
+        "--workdir", "/workspace",
+        image_name,
+        "opencode", "agent", "list",
+    ])
+
+    try:
+        result = _run_streamed(
+            cmd,
+            cwd=worktree_path,
+            timeout=timeout,
+            prefix="agent-check",
+            err_prefix="agent-check",
+            check=False,
+        )
+        # Check if the specified agent appears in the output
+        if agent in (result.stdout or "") or agent in (result.stderr or ""):
+            return True
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"  WARNING: Agent check timed out, proceeding anyway")
+        return True  # Don't block the run if check times out
 
 
 def _filesystem_diff(worktree_path):
@@ -589,10 +705,11 @@ def main():
         repo          = instance["repo"]
         base_commit   = instance["base_commit"]
         issue         = instance["problem_statement"]
+        version       = instance.get("version", "")
 
         print(f"\n{'=' * 60}")
         print(f"[{idx + 1}/{len(instances)}] {instance_id}")
-        print(f"  Repo: {repo}  Commit: {base_commit[:8]}")
+        print(f"  Repo: {repo}  Version: {version}  Commit: {base_commit[:8]}")
 
         worktree_path = None
         venv_path = None
@@ -606,10 +723,22 @@ def main():
             if args.docker:
                 print(f"  Docker workspace: {worktree_path}")
                 print(f"  Running opencode in Docker (model={args.model}, agent={args.agent}, timeout={args.timeout}s) ...")
+
+                # Pre-check agent exists in container via `opencode agent list`
+                if args.agent:
+                    print(f"  Checking if agent '{args.agent}' is available in container...")
+                    agent_available = check_agent_in_container(worktree_path, args.agent)
+                    if not agent_available:
+                        print(f"  ✗ Agent '{args.agent}' not found in container!")
+                        print(f"  Ensure ~/.opencode is properly configured and mounted.")
+                        failed_ids.append(instance_id)
+                        continue
+                    print(f"  ✓ Agent '{args.agent}' found in container")
+
                 log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
                 print(f"  Log → {log_file}")
                 t0 = time.time()
-                result = run_opencode_docker(worktree_path, prompt, args.model, args.timeout, instance_id, args.agent)
+                result = run_opencode_docker(worktree_path, prompt, args.model, args.timeout, instance_id, args.agent, repo=repo, version=version)
                 elapsed = time.time() - t0
                 print(f"\n  --- opencode (Docker) finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
             else:
@@ -712,9 +841,9 @@ def main():
         print(f"       {docker_flag}\\")
         print(f"       --run-id {run_tag}")
         print()
-        print(f"1️⃣  Evaluate (after retrying):")
+        print(f"① Evaluate (after retrying):")
     else:
-        print(f"1️⃣  Evaluate:")
+        print(f"① Evaluate:")
     print(f"   python -m src.main \\")
     print(f"       --dataset_name princeton-nlp/SWE-bench_Lite \\")
     print(f"       --predictions_path {output_path} \\")
@@ -722,7 +851,7 @@ def main():
     print(f"       --instance_ids $(cat dataset/swt_bench_lite_subset.txt | tr '\\n' ' ') \\")
     print(f"       --run_id {run_tag}")
     print()
-    print(f"2️⃣  Report (after evaluation):")
+    print(f"② Report (after evaluation):")
     print(f"   python -m src.report_custom run_instance_swt_logs/{run_tag}/{model_name} --total 51")
 
 
