@@ -506,10 +506,10 @@ def _validate_patch(patch, worktree_path):
 
 def extract_patch(stdout, worktree_path):
     """Extract unified git diff from opencode stdout."""
-    # 1) <patch> tags
+    # 1) <patch> tags (must be on their own line)
     m = re.search(
-        r"<patch>\s*\n?(.*?)\n?</patch>",
-        stdout, re.DOTALL,
+        r"^\s*<patch>\s*\n?(.*?)\n?\s*</patch>\s*$",
+        stdout, re.MULTILINE | re.DOTALL,
     )
     if m:
         patch = m.group(1).strip()
@@ -548,7 +548,7 @@ def is_valid_patch(stdout, patch):
         return False, "agent did not output <patch> tag"
 
     # Verify tags contain actual diff content (not empty)
-    m = re.search(r"<patch>\s*\n?(.*?)\n?</patch>", stdout, re.DOTALL)
+    m = re.search(r"^\s*<patch>\s*\n?(.*?)\n?\s*</patch>\s*$", stdout, re.MULTILINE | re.DOTALL)
     if m:
         tag_content = m.group(1).strip()
         if not tag_content:

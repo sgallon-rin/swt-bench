@@ -580,10 +580,10 @@ def extract_patch(stdout, worktree_path):
 
     Layer 3: Validates that all files in the patch are within the workspace.
     """
-    # 1) <patch> tags
+    # 1) <patch> tags (must be on their own line)
     m = re.search(
-        r"<patch>\s*\n?(.*?)\n?</patch>",
-        stdout, re.DOTALL,
+        r"^\s*<patch>\s*\n?(.*?)\n?\s*</patch>\s*$",
+        stdout, re.MULTILINE | re.DOTALL,
     )
     if m:
         patch = m.group(1).strip()
