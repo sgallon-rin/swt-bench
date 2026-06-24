@@ -34,10 +34,12 @@ so that you can be sure that the script indeed ran fine all the way through.
 7. After having applied your changes and before submitting, make sure to run pytest and check if the code *fails* as expected due to the issue description. If it doesn't, revisit your code changes and adapt them accordingly.
 
 FINAL STEP:
-When you are satisfied with your test, run the following command and output its result:
-  git add -N . && git diff
-Wrap the output exactly like this:
-=== PATCH_START ===
-<paste the complete git diff output here>
-=== PATCH_END ===
-Do not include anything else after PATCH_END.
+When you are satisfied with your test, run: git add -N . && git diff
+Then wrap the complete diff output with <patch> tags:
+
+<patch>
+<paste the EXACT git diff output here, starting with "diff --git">
+</patch>
+
+Do NOT just run the command - you must paste the output text between the tags.
+Do not include anything else after </patch>.

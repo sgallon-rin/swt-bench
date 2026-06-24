@@ -506,10 +506,10 @@ def _validate_patch(patch, worktree_path):
 
 def extract_patch(stdout, worktree_path):
     """Extract unified git diff from opencode stdout."""
-    # 1) Markers
+    # 1) <patch> tags
     m = re.search(
-        r"=== PATCH_START ===\s*\n(.*?)=== PATCH_END ===",
-        stdout, re.DOTALL | re.IGNORECASE,
+        r"<patch>\s*\n?(.*?)\n?</patch>",
+        stdout, re.DOTALL,
     )
     if m:
         patch = m.group(1).strip()
@@ -536,16 +536,25 @@ def extract_patch(stdout, worktree_path):
 
 
 def is_valid_patch(stdout, patch):
-    """Check if agent explicitly output a patch with markers.
+    """Check if agent explicitly output a patch with <patch> tags.
 
     Returns (is_valid, reason) tuple.
     """
     if not patch:
         return False, "empty patch"
 
-    # Check if agent explicitly output the patch with markers
-    if "=== PATCH_START ===" not in stdout:
-        return False, "agent did not output === PATCH_START === marker"
+    # Check if agent explicitly output the patch with <patch> tags
+    if "<patch>" not in stdout:
+        return False, "agent did not output <patch> tag"
+
+    # Verify tags contain actual diff content (not empty)
+    m = re.search(r"<patch>\s*\n?(.*?)\n?</patch>", stdout, re.DOTALL)
+    if m:
+        tag_content = m.group(1).strip()
+        if not tag_content:
+            return False, "patch tags are empty - agent did not paste diff output between <patch> tags"
+        if not tag_content.startswith("diff --git"):
+            return False, "patch tags do not contain a valid git diff"
 
     return True, None
 
@@ -747,7 +756,7 @@ def main():
 
             model_patch = extract_patch(result.stdout, worktree_path)
 
-            # Validate: agent must explicitly output === PATCH_START === marker
+            # Validate: agent must explicitly output <patch> tag
             is_valid, reason = is_valid_patch(result.stdout, model_patch)
             if not is_valid:
                 print(f"  WARNING: {reason}")

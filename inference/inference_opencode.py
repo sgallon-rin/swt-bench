@@ -574,16 +574,16 @@ def extract_patch(stdout, worktree_path):
     """Extract unified git diff from opencode stdout.
 
     Tries three strategies, in order:
-      1. Delimiter markers  === PATCH_START === / === PATCH_END ===
+      1. <patch>...</patch> tags
       2. Raw diff --git  pattern anywhere in the output
       3. Filesystem fallback (git diff in workspace)
 
     Layer 3: Validates that all files in the patch are within the workspace.
     """
-    # 1) Markers
+    # 1) <patch> tags
     m = re.search(
-        r"=== PATCH_START ===\s*\n(.*?)=== PATCH_END ===",
-        stdout, re.DOTALL | re.IGNORECASE,
+        r"<patch>\s*\n?(.*?)\n?</patch>",
+        stdout, re.DOTALL,
     )
     if m:
         patch = m.group(1).strip()
