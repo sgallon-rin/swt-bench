@@ -60,6 +60,7 @@ PROMPT_TEMPLATE_PATH = PROJECT_ROOT / "prompts" / "opencode.txt"
 REPO_CACHE_DEFAULT = PROJECT_ROOT / "repo-cache"
 WORKSPACE_DIR_DEFAULT = PROJECT_ROOT / "tmp" / "workspaces"
 PREDICTIONS_DIR = PROJECT_ROOT / "predictions"
+OPCODE_CONFIG_PATH = SCRIPT_DIR / "opencode.json"
 
 GIT_BASE_URL = os.environ.get("GIT_BASE_URL", "https://github.com")
 HUGGINGFACE_TOKEN = os.environ.get("HF_TOKEN")
@@ -399,6 +400,7 @@ def run_opencode_docker_v2(
     timeout: int,
     instance_id: str,
     agent: str = None,
+    opencode_config: Path = None,
 ) -> subprocess.CompletedProcess:
     """Run opencode inside a container based on inference image.
 
@@ -436,6 +438,10 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
 
         # Mount the script
         cmd.extend(["-v", f"{script_path}:/run.sh"])
+
+        # Mount project opencode config to workspace
+        if opencode_config is not None and opencode_config.exists():
+            cmd.extend(["-v", f"{opencode_config}:/testbed/opencode.json"])
 
         # Mount opencode config directories
         if auth_dir.exists():
@@ -736,7 +742,8 @@ def main():
             print(f"  Log → {log_file}")
             t0 = time.time()
             result = run_opencode_docker_v2(
-                inference_image, prompt, args.model, args.timeout, instance_id, args.agent
+                inference_image, prompt, args.model, args.timeout, instance_id, args.agent,
+                opencode_config=OPCODE_CONFIG_PATH,
             )
             elapsed = time.time() - t0
             print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
