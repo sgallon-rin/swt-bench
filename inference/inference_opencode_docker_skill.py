@@ -44,6 +44,8 @@ import tempfile
 import threading
 import time
 import traceback
+import tarfile
+import uuid
 
 import docker
 
@@ -308,10 +310,17 @@ def build_inference_image(src_instance_key: str, arch: str) -> str:
 
     # Create Dockerfile that adds opencode on top of src instance image
     dockerfile = f"""FROM {src_instance_key}
+RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /home/nonroot/.local/state && chown -R nonroot:nonroot /home/nonroot/.local
+RUN mkdir -p /home/nonroot/.local/share/opencode && chown -R nonroot:nonroot /home/nonroot/.local/share/opencode
+RUN mkdir -p /home/nonroot/.local/share/uv && chown -R nonroot:nonroot /home/nonroot/.local/share/uv
 RUN chown -R nonroot:nonroot /testbed
 RUN curl -fsSL "https://github.com/anomalyco/opencode/releases/download/{OPCODE_VERSION}/opencode-linux-{ocode_arch}.tar.gz" \\
     | tar xz -C /usr/local/bin opencode
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \\
+    cp /root/.local/bin/uv /usr/local/bin/uv && \\
+    cp /root/.local/bin/uvx /usr/local/bin/uvx && \\
+    chmod +x /usr/local/bin/uv /usr/local/bin/uvx
 """
 
     # Build the image
@@ -334,128 +343,24 @@ RUN curl -fsSL "https://github.com/anomalyco/opencode/releases/download/{OPCODE_
             raise
 
 
-def check_agent_in_container(inference_image: str, agent: str, timeout: int = 30) -> bool:
-    """Run `opencode agent list` in a container to verify the agent exists.
+def _docker_mount_args():
+    """Build the -v mount arguments for opencode config.
 
-    Returns True if agent is found, False otherwise.
+    auth.json is mounted to /tmp first, then copied by the nonroot user
+    inside the container to avoid Docker creating root-owned parent dirs.
     """
-    if agent is None:
-        return True
+    mounts = []
+    auth_json = Path.home() / ".local/share/opencode/auth.json"
+    config_dir = Path.home() / ".config/opencode"
+    opencode_dir = Path.home() / ".opencode"
 
-    home_path = Path.home()
-    auth_dir = home_path / ".local/share/opencode"
-    config_dir = home_path / ".config/opencode"
-    opencode_dir = home_path / ".opencode"
-
-    cmd = ["docker", "run", "--rm", "--user", "nonroot"]
-
-    # Mount config directories
-    if auth_dir.exists():
-        cmd.extend(["-v", f"{auth_dir}:/home/nonroot/.local/share/opencode"])
+    if auth_json.exists():
+        mounts.extend(["-v", f"{auth_json}:/tmp/auth.json:ro"])
     if config_dir.exists():
-        cmd.extend(["-v", f"{config_dir}:/home/nonroot/.config/opencode"])
+        mounts.extend(["-v", f"{config_dir}:/home/nonroot/.config/opencode"])
     if opencode_dir.exists():
-        cmd.extend(["-v", f"{opencode_dir}:/home/nonroot/.opencode"])
-
-    cmd.extend([
-        "--workdir", "/testbed",
-        inference_image,
-        "bash", "-c",
-        f"source /opt/miniconda3/bin/activate && conda activate testbed && opencode agent list 2>&1 | grep '{agent} (primary)'",
-    ])
-
-    try:
-        result = _run_streamed(
-            cmd,
-            cwd="/tmp",
-            timeout=timeout,
-            prefix="agent-check",
-            err_prefix="agent-check",
-            check=False,
-            quiet_stderr=True,
-        )
-        if result.returncode == 0:
-            return True  # grep found the agent
-
-        # Failed - run again without grep to show available agents for debugging
-        debug_cmd = cmd[:-1] + [
-            "bash", "-c",
-            "source /opt/miniconda3/bin/activate && conda activate testbed && opencode agent list 2>&1",
-        ]
-        debug_result = _run_streamed(
-            debug_cmd,
-            cwd="/tmp",
-            timeout=timeout,
-            prefix="agent-check-debug",
-            err_prefix="agent-check-debug",
-            check=False,
-        )
-        return False
-    except subprocess.TimeoutExpired:
-        print(f"  WARNING: Agent check timed out, proceeding anyway")
-        return True
-
-
-def check_skill_in_container(inference_image: str, skill_name: str = "issue-driven-dt", timeout: int = 30) -> bool:
-    """Run opencode in a container to verify the skill is available.
-
-    The skill tool description lists available skills. We check that the
-    skill name appears in the output.
-
-    Returns True if skill is found, False otherwise.
-    """
-    home_path = Path.home()
-    auth_dir = home_path / ".local/share/opencode"
-    config_dir = home_path / ".config/opencode"
-    opencode_dir = home_path / ".opencode"
-
-    cmd = ["docker", "run", "--rm", "--user", "nonroot"]
-
-    # Mount config directories
-    if auth_dir.exists():
-        cmd.extend(["-v", f"{auth_dir}:/home/nonroot/.local/share/opencode"])
-    if config_dir.exists():
-        cmd.extend(["-v", f"{config_dir}:/home/nonroot/.config/opencode"])
-    if opencode_dir.exists():
-        cmd.extend(["-v", f"{opencode_dir}:/home/nonroot/.opencode"])
-
-    cmd.extend([
-        "--workdir", "/testbed",
-        inference_image,
-        "bash", "-c",
-        f"source /opt/miniconda3/bin/activate && conda activate testbed && opencode debug config 2>&1 | grep -i '{skill_name}'",
-    ])
-
-    try:
-        result = _run_streamed(
-            cmd,
-            cwd="/tmp",
-            timeout=timeout,
-            prefix="skill-check",
-            err_prefix="skill-check",
-            check=False,
-            quiet_stderr=True,
-        )
-        if result.returncode == 0:
-            return True
-
-        # Fallback: try to see if SKILL.md is accessible in mounted dir
-        debug_cmd = cmd[:-1] + [
-            "bash", "-c",
-            f"source /opt/miniconda3/bin/activate && conda activate testbed && ls -la /home/nonroot/.opencode/skills/{skill_name}/SKILL.md 2>&1",
-        ]
-        debug_result = _run_streamed(
-            debug_cmd,
-            cwd="/tmp",
-            timeout=timeout,
-            prefix="skill-check-debug",
-            err_prefix="skill-check-debug",
-            check=False,
-        )
-        return debug_result.returncode == 0
-    except subprocess.TimeoutExpired:
-        print(f"  WARNING: Skill check timed out, proceeding anyway")
-        return True
+        mounts.extend(["-v", f"{opencode_dir}:/home/nonroot/.opencode"])
+    return mounts
 
 
 def run_opencode_docker_v2(
@@ -466,14 +371,39 @@ def run_opencode_docker_v2(
     instance_id: str,
     agent: str = None,
     opencode_config: Path = None,
-) -> subprocess.CompletedProcess:
+    check_agent: bool = True,
+    check_skill: bool = True,
+) -> tuple[subprocess.CompletedProcess, Path | None, Path | None]:
     """Run opencode inside a container based on inference image.
 
     Uses the same user (nonroot) and working directory (/testbed) as src images.
     Mounts opencode config from host.
+    Agent and skill checks are performed inside the container before running opencode.
+    After opencode finishes, exports the session transcript and .ai-test-workspace
+    to the host.
+
+    Returns (result, session_export_path, workspace_export_path).
     """
     prompt_b64 = base64.b64encode(prompt.encode()).decode()
     agent_flag = f"--agent {agent}" if agent else ""
+    container_name = f"opencode-{instance_id}-{uuid.uuid4().hex[:8]}"
+
+    # Build check commands for the setup script
+    agent_check = ""
+    if check_agent and agent:
+        agent_check = f"""
+echo "  [check] Verifying agent '{agent}'..."
+opencode agent list 2>&1 | grep '{agent} (primary)' || {{ echo "  ✗ Agent '{agent}' not found"; exit 1; }}
+echo "  ✓ Agent '{agent}' found"
+"""
+
+    skill_check = ""
+    if check_skill:
+        skill_check = """
+echo "  [check] Verifying skill 'issue-driven-dt'..."
+test -f /home/nonroot/.opencode/skills/issue-driven-dt/SKILL.md || { echo "  ✗ Skill 'issue-driven-dt' not found"; exit 1; }
+echo "  ✓ Skill 'issue-driven-dt' found"
+"""
 
     # Create the script to run inside the container
     setup_script = f"""#!/bin/bash
@@ -483,23 +413,44 @@ source /opt/miniconda3/bin/activate
 conda activate testbed
 cd /testbed
 git config --global --add safe.directory /testbed
+if [ -f /tmp/auth.json ]; then
+    mkdir -p /home/nonroot/.local/share/opencode
+    cp /tmp/auth.json /home/nonroot/.local/share/opencode/auth.json
+fi
+{agent_check}{skill_check}
 echo "  [setup] Running opencode..."
 OPCODE_PROMPT=$(echo {prompt_b64} | base64 -d)
-opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id} --dir /testbed
-"""
+opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id} --dir /testbed || true
 
-    home_path = Path.home()
-    auth_dir = home_path / ".local/share/opencode"
-    config_dir = home_path / ".config/opencode"
-    opencode_dir = home_path / ".opencode"
+# Export session transcript
+echo "  [export] Exporting session transcript..."
+LATEST_SESSION=$(opencode session list --format json 2>/dev/null | python3 -c "import sys,json; sessions=json.load(sys.stdin); print(sessions[0]['id'] if sessions else '')" 2>/dev/null || true)
+if [ -n "$LATEST_SESSION" ]; then
+    opencode export "$LATEST_SESSION" > /tmp/opencode_session_export.json 2>/dev/null
+    echo "  ✓ Session exported"
+else
+    echo "  ✗ No session found to export"
+fi
+
+# Export .ai-test-workspace (skill workflow artifacts)
+echo "  [export] Exporting .ai-test-workspace..."
+if [ -d /testbed/.ai-test-workspace ]; then
+    tar -czf /tmp/ai-test-workspace.tar.gz -C /testbed .ai-test-workspace
+    echo "  ✓ .ai-test-workspace archived"
+else
+    echo "  ✗ .ai-test-workspace not found"
+fi
+"""
 
     # Write script to temp file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
         f.write(setup_script)
         script_path = f.name
 
+    export_path = None
+    workspace_export_path = None
     try:
-        cmd = ["docker", "run", "--rm", "--user", "nonroot"]
+        cmd = ["docker", "run", "--name", container_name, "--user", "nonroot"]
 
         # Mount the script
         cmd.extend(["-v", f"{script_path}:/run.sh"])
@@ -509,12 +460,7 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
             cmd.extend(["-v", f"{opencode_config}:/testbed/opencode.json"])
 
         # Mount opencode config directories
-        if auth_dir.exists():
-            cmd.extend(["-v", f"{auth_dir}:/home/nonroot/.local/share/opencode"])
-        if config_dir.exists():
-            cmd.extend(["-v", f"{config_dir}:/home/nonroot/.config/opencode"])
-        if opencode_dir.exists():
-            cmd.extend(["-v", f"{opencode_dir}:/home/nonroot/.opencode"])
+        cmd.extend(_docker_mount_args())
 
         cmd.extend([
             "--workdir", "/testbed",
@@ -522,7 +468,7 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
             "bash", "/run.sh",
         ])
 
-        return _run_streamed(
+        result = _run_streamed(
             cmd,
             cwd="/tmp",
             timeout=timeout,
@@ -531,7 +477,35 @@ opencode run "$OPCODE_PROMPT" --model {model} {agent_flag} --title {instance_id}
             check=False,
             quiet_stderr=True,
         )
+
+        # Copy exported session from container to host
+        try:
+            tmp_export = Path(tempfile.gettempdir()) / f"opencode_session_{instance_id}.json"
+            cp_result = subprocess.run(
+                ["docker", "cp", f"{container_name}:/tmp/opencode_session_export.json", str(tmp_export)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if cp_result.returncode == 0 and tmp_export.exists():
+                export_path = tmp_export
+        except Exception:
+            pass
+
+        # Copy .ai-test-workspace archive from container to host and extract
+        try:
+            tmp_ws_archive = Path(tempfile.gettempdir()) / f"ai-test-workspace_{instance_id}.tar.gz"
+            cp_result = subprocess.run(
+                ["docker", "cp", f"{container_name}:/tmp/ai-test-workspace.tar.gz", str(tmp_ws_archive)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if cp_result.returncode == 0 and tmp_ws_archive.exists():
+                workspace_export_path = tmp_ws_archive
+        except Exception:
+            pass
+
+        return result, export_path, workspace_export_path
     finally:
+        # Clean up container
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
         os.unlink(script_path)
 
 
@@ -792,40 +766,34 @@ def main():
             print(f"  Building inference image...")
             inference_image = build_inference_image(src_instance_key, exec_spec.arch)
 
-            # Step 3: Check agent availability
-            if args.agent:
-                print(f"  Checking if agent '{args.agent}' is available...")
-                agent_available = check_agent_in_container(inference_image, args.agent)
-                if not agent_available:
-                    print(f"  ✗ Agent '{args.agent}' not found in container!")
-                    print(f"  Ensure ~/.opencode is properly configured.")
-                    failed_ids.append(instance_id)
-                    continue
-                print(f"  ✓ Agent '{args.agent}' found")
-
-            # Step 4: Check skill availability
-            if not args.skip_skill_check:
-                print(f"  Checking if skill 'issue-driven-dt' is available...")
-                skill_available = check_skill_in_container(inference_image)
-                if not skill_available:
-                    print(f"  ✗ Skill 'issue-driven-dt' not found in container!")
-                    print(f"  Ensure ~/.opencode/skills/issue-driven-dt is properly mounted.")
-                    failed_ids.append(instance_id)
-                    continue
-                print(f"  ✓ Skill 'issue-driven-dt' found")
-
-            # Step 5: Run opencode
+            # Step 3: Run opencode (agent/skill checks are performed inside the container)
             effective_agent = args.agent if args.agent else "build"
             print(f"  Running opencode (model={args.model}, agent={effective_agent}, timeout={args.timeout}s) ...")
             log_file = workspace_dir / instance_id / f"{instance_id}_opencode.log"
+            session_export_file = workspace_dir / instance_id / f"{instance_id}_session.json"
             print(f"  Log → {log_file}")
             t0 = time.time()
-            result = run_opencode_docker_v2(
+            result, session_export, workspace_export = run_opencode_docker_v2(
                 inference_image, prompt, args.model, args.timeout, instance_id, args.agent,
                 opencode_config=OPCODE_CONFIG_PATH,
+                check_agent=True,
+                check_skill=not args.skip_skill_check,
             )
             elapsed = time.time() - t0
             print(f"\n  --- opencode finished (exit={result.returncode}, elapsed={elapsed:.0f}s) ---")
+
+            # Save session export if available
+            if session_export and session_export.exists():
+                shutil.move(str(session_export), str(session_export_file))
+                print(f"  Session export → {session_export_file}")
+
+            # Extract .ai-test-workspace if available
+            if workspace_export and workspace_export.exists():
+                ws_dir = workspace_dir / instance_id / "ai-test-workspace"
+                with tarfile.open(workspace_export, "r:gz") as tar:
+                    tar.extractall(path=str(workspace_dir / instance_id))
+                workspace_export.unlink()
+                print(f"  .ai-test-workspace → {ws_dir}")
 
             # Save raw opencode output for debugging
             log_file.write_text(

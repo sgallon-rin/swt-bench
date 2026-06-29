@@ -1,3 +1,5 @@
+/issue-driven-dt
+
 CRITICAL ISOLATION RULE:
 You are working in an ISOLATED repository directory. You MUST ONLY work with files in the current directory and its subdirectories. DO NOT access, modify, search, or install files outside this directory. All edits, searches, commands, and pip installs must target files within this repository only. Never use absolute paths outside this directory. Never modify any .venv, site-packages, or system directories. If you need temporary files, create them in the current directory (e.g., ./temp_script.py) and delete them when done. NEVER use /tmp/ or other system directories.
 
