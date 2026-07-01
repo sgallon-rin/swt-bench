@@ -3,7 +3,7 @@
 SWT-Bench Inference using pre-built evaluation images with issue-driven-dt skill.
 
 This script reuses src's instance images (exec.eval.*) and adds opencode
-to create inference images (swt-inf.eval.*). This avoids rebuilding
+to create inference images (swt-inf-skill.eval.*). This avoids rebuilding
 environments at runtime.
 
 The build agent is instructed to load the "issue-driven-dt" skill to generate
@@ -13,7 +13,7 @@ Architecture:
   src instance image (exec.eval.{arch}.{env_hash}.{instance_hash})
       ↓ already contains: conda env + deps + project code (/testbed)
       ↓ add opencode (~10s)
-  inference image (swt-inf.eval.{arch}.{env_hash}.{instance_hash})
+  inference image (swt-inf-skill.eval.{arch}.{env_hash}.{instance_hash})
       ↓ run: --user nonroot, WORKDIR /testbed
       ↓ mount: ~/.opencode → /home/nonroot/.opencode
       ↓ execute: conda activate testbed && opencode run ...
@@ -290,7 +290,8 @@ def build_inference_image(src_instance_key: str, arch: str) -> str:
     Returns the inference image key.
     """
     # Derive inference image key from src image key
-    inference_image_key = src_instance_key.replace("exec.eval", "swt-inf.eval")
+    # Use 'swt-inf-skill.eval' to distinguish from non-skill inference images
+    inference_image_key = src_instance_key.replace("exec.eval", "swt-inf-skill.eval")
 
     client = docker.from_env()
     try:
