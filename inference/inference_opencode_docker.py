@@ -842,7 +842,7 @@ def main():
     print(f"       --run_id {run_tag}")
     print()
     print(f"② Report (after evaluation):")
-    print(f"   python -m src.report_custom run_instance_swt_logs/{run_tag}/{model_name} --total 51")
+    print(f"   python -m src.report_custom run_instance_swt_logs/{run_tag}/{model_name}")
 
 
 if __name__ == "__main__":

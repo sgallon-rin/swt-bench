@@ -68,7 +68,7 @@ python -m src.main \
 ### Generate Report
 
 ```bash
-python -m src.report_custom run_instance_swt_logs/${RUN_ID}/opencode__deepseek_deepseek-v4-flash --total 51
+python -m src.report_custom run_instance_swt_logs/${RUN_ID}/opencode__deepseek_deepseek-v4-flash
 ```
 
 ## Architecture
@@ -192,18 +192,16 @@ python -m src.main \
 The standard `src/report.py` uses the full dataset size (~300) as denominator, which is incorrect for subsets. Use `src/report_custom.py` instead:
 
 ```bash
-# Basic report (replace 51 with your actual subset size)
-python -m src.report_custom run_instance_swt_logs/${RUN_ID}/opencode__deepseek_deepseek-v4-flash --total 51
+# Basic report (auto-detects total from reports)
+python -m src.report_custom run_instance_swt_logs/${RUN_ID}/opencode__deepseek_deepseek-v4-flash
 
 # With Coverage Delta (requires a gold run for comparison)
 python -m src.report_custom run_instance_swt_logs/${RUN_ID}/opencode__deepseek_deepseek-v4-flash \
-    --total 51 \
     --gold-run-id ${RUN_ID} \
     --name "My Model"
 
 # LaTeX format
 python -m src.report_custom run_instance_swt_logs/${RUN_ID}/opencode__deepseek_deepseek-v4-flash \
-    --total 51 \
     --gold-run-id ${RUN_ID} \
     --format latex
 ```
@@ -220,7 +218,7 @@ Example output:
 
 | Flag | Description |
 |------|-------------|
-| `--total` | Total number of instances in your subset (used as denominator) |
+| `--total` | (Optional) Override auto-detected total number of instances |
 | `--gold-run-id` | Run ID of the gold evaluation for coverage delta comparison |
 | `--name` | Display name for the method (default: extracted from path) |
 | `--format` | Output format: `github` (markdown table) or `latex` |

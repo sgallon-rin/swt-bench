@@ -2,21 +2,23 @@
 Custom report script for arbitrary instance subsets.
 
 Unlike src/report.py which uses fixed dataset sizes (300 for lite, etc.),
-this script accepts a custom --total parameter to compute percentages
-based on your actual subset size.
+this script auto-detects the number of instances from report.json files.
 
 Usage:
-    # Basic usage with custom total
+    # Basic usage (auto-detects total from reports)
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold
+
+    # With custom total override
     python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51
 
     # With custom name
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51 --name "My Subset"
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --name "My Subset"
 
     # With LaTeX output
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51 --format latex
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --format latex
 
     # With coverage delta comparison (requires a gold run in the same parent directory)
-    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --total 51 --gold-run-id gold-subset-a
+    python -m src.report_custom run_instance_swt_logs/gold-subset-a/gold --gold-run-id gold-subset-a
 """
 
 import sys
@@ -43,7 +45,7 @@ from figures.util import (
 
 def main(
     path: str,
-    total: int,
+    total: int = None,
     name: str = None,
     format: str = "github",
     gold_run_id: str = None,
@@ -54,7 +56,8 @@ def main(
     Args:
         path: Path to the model run directory under run_instance_swt_logs/{run_id}/{model}/
               e.g. "run_instance_swt_logs/gold-subset-a/gold"
-        total: Total number of instances in your subset (used as denominator for percentages)
+        total: Total number of instances in your subset (used as denominator for percentages).
+               If not provided, auto-detected from the number of report.json files.
         name: Display name for the method (default: extracted from path)
         format: Output format - "github" for markdown table, "latex" for LaTeX
         gold_run_id: Optional run_id for gold predictions to compute coverage delta.
@@ -71,6 +74,11 @@ def main(
     model = instance_log_path.name
 
     reports = collect_reports(model, run_id, instance_log_path.parent.parent)
+
+    if total is None:
+        total = len(reports)
+        print(f"Auto-detected total: {total} instances")
+        print(f"Instance IDs: {', '.join(sorted(reports.keys()))}")
 
     fields = (
         [r"{$\mathcal{W}$}", r"{$\suc$}", r"{\ftx}", r"{\ftp}", r"{\ptp}"]
